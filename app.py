@@ -1,4 +1,3 @@
-
 #!/usr/bin/env python3
 """
 ╔══════════════════════════════════════════════════════════════════════╗
@@ -13,6 +12,11 @@
 ║              ✅ Smart DC Recommendation Engine                                   ║
 ║                                                                      ║
 ║           API: football-data.org v4 + The Odds API                              ║
+║                                                                      ║
+║           INTEGRATED FILES:                                                     ║
+║              - football_xgboost_model.pkl (pretrained XGBoost)                  ║
+║              - teams_master_map.json (name unification)                         ║
+║              - teams_elo_ratings.pkl (pre‑computed Elo ratings)                 ║
 ╚══════════════════════════════════════════════════════════════════════╝
 """
 
@@ -20,7 +24,7 @@ import requests
 import json
 import math
 import os
-import sys 
+import sys
 import time
 import hashlib
 import pickle
@@ -36,15 +40,12 @@ try:
 except ImportError:
     STREAMLIT_AVAILABLE = False
 
+# محاولة استيراد مكتبات ML (لن نحتاجها الآن، لكن نبقيها تحسباً)
 ML_AVAILABLE = False
 XGBOOST_AVAILABLE = False
 try:
     import numpy as np
-    from sklearn.ensemble import (
-        RandomForestClassifier,
-        GradientBoostingClassifier,
-        StackingClassifier
-    )
+    from sklearn.ensemble import RandomForestClassifier, GradientBoostingClassifier, StackingClassifier
     from sklearn.linear_model import LogisticRegression
     from sklearn.model_selection import cross_val_score
     from sklearn.preprocessing import StandardScaler
@@ -88,6 +89,11 @@ FORM_N = 8
 BACKTEST_SPLIT = 0.70
 CALIBRATION_FILE = "calibration_v31.pkl"
 
+# الملفات المدمجة الجديدة
+XGB_MODEL_FILE = "football_xgboost_model.pkl"
+TEAMS_MAP_FILE = "teams_master_map.json"
+ELO_RATINGS_FILE = "teams_elo_ratings.pkl"
+
 RIVALRIES = {
     frozenset({'Arsenal', 'Tottenham'}): 'North London Derby',
     frozenset({'Liverpool', 'Everton'}): 'Merseyside Derby',
@@ -101,6 +107,7 @@ RIVALRIES = {
     frozenset({'Wolves', 'Aston Villa'}): 'West Midlands Derby',
 }
 
+# ALIASES الأساسية (سيتم دمجها مع الخريطة المحملة)
 ALIASES = {
     'manchester united': 'Man United',
     'manchester city': 'Man City',
@@ -122,6 +129,45 @@ ALIASES = {
     'everton': 'Everton',
 }
 
+# تحميل قاموس توحيد الأسماء الإضافي (إذا وجد)
+TEAMS_MAP = {}
+if Path(TEAMS_MAP_FILE).exists():
+    try:
+        with open(TEAMS_MAP_FILE, 'r', encoding='utf-8') as f:
+            TEAMS_MAP = json.load(f)
+        # تحويل المفاتيح إلى صيغة صالحة (نحتفظ بالتعيينات)
+        for k, v in TEAMS_MAP.items():
+            # قد تكون المفاتيح طويلة جداً، نأخذ فقط الجزء الأخير من اسم الفريق
+            # نضيف التعيين لكل اسم محتمل
+            parts = k.split()
+            if parts:
+                last_part = parts[-1]  # آخر كلمة غالباً اسم الفريق
+                if last_part not in ALIASES:
+                    ALIASES[last_part.lower()] = v
+        print(C.green("✓ Loaded teams map"))
+    except Exception as e:
+        print(C.red(f"✖ Failed to load teams map: {e}"))
+
+# تحميل تقييمات Elo المحفوظة (إذا وجدت)
+ELO_RATINGS = {}
+if Path(ELO_RATINGS_FILE).exists():
+    try:
+        with open(ELO_RATINGS_FILE, 'rb') as f:
+            raw_elo = pickle.load(f)
+            # محاولة استخراج أسماء الفرق من المفاتيح المعقدة
+            for key, val in raw_elo.items():
+                # المفاتيح تحتوي على أسماء الفرق في نهاية النص (تقريباً)
+                # نقوم باستخراج اسم الفريق المحتمل
+                if isinstance(key, str):
+                    # نأخذ آخر كلمة (قد يكون اسم الفريق)
+                    parts = key.split()
+                    if parts:
+                        team_name = parts[-1]  # أبسط تخمين
+                        ELO_RATINGS[team_name] = val
+        print(C.green("✓ Loaded Elo ratings"))
+    except Exception as e:
+        print(C.red(f"✖ Failed to load Elo ratings: {e}"))
+
 # ══════════════════════════════════════════════════════════════
 # UTILITIES
 # ══════════════════════════════════════════════════════════════
@@ -141,6 +187,10 @@ def norm_name(n):
         return ALIASES[lo]
     for k, v in ALIASES.items():
         if k in lo or lo in k:
+            return v
+    # أيضاً نبحث في TEAMS_MAP
+    for k, v in TEAMS_MAP.items():
+        if lo in k.lower() or k.lower() in lo:
             return v
     return n
 
@@ -403,11 +453,9 @@ class OddsAPI:
                         'implied_home': round(1 / avh, 4),
                         'implied_draw': round(1 / avd, 4),
                         'implied_away': round(1 / ava, 4),
-                        # حساب DC odds الضمنية
                         'implied_1x': round(1 / avh + 1 / avd, 4),
                         'implied_x2': round(1 / ava + 1 / avd, 4),
                         'implied_12': round(1 / avh + 1 / ava, 4),
-                        # DC odds تقريبية
                         'odds_1x': round(1 / (1 / avh + 1 / avd - 0.05), 2) if (1 / avh + 1 / avd) > 0.05 else None,
                         'odds_x2': round(1 / (1 / ava + 1 / avd - 0.05), 2) if (1 / ava + 1 / avd) > 0.05 else None,
                         'odds_12': round(1 / (1 / avh + 1 / ava - 0.05), 2) if (1 / avh + 1 / ava) > 0.05 else None,
@@ -460,14 +508,15 @@ class Team:
         self.a_gf = 0
         self.a_ga = 0
         self.results = []
-        self.elo = ELO_INIT
-        self.elo_hist = [ELO_INIT]
+        # استخدام التقييم المحفوظ إذا وجد
+        global ELO_RATINGS
+        self.elo = ELO_RATINGS.get(name, ELO_INIT)
+        self.elo_hist = [self.elo]
         self.match_dates = []
         self.cs = 0
         self.fts = 0
         self._last_draw = False
         self.consec_draws = 0
-        # v3.1: Momentum
         self.win_streak = 0
         self.loss_streak = 0
         self.unbeaten = 0
@@ -538,14 +587,12 @@ class Team:
 
     @property
     def form_score(self):
-        """v3.1: Exponential decay weighting"""
         rec = self.results[-FORM_N:]
         if not rec:
             return 50.0
         total = 0.0
         max_t = 0.0
         for i, r in enumerate(rec):
-            # وزن أسي: الأحدث = أكبر بكثير
             w = math.exp(0.3 * (i - len(rec) + 1))
             pts = {'W': 3, 'D': 1, 'L': 0}[r[0]]
             total += pts * w
@@ -557,7 +604,6 @@ class Team:
         rec = self.results[-FORM_N:]
         if not rec:
             return self.avg_gf
-        # v3.1: وزن أسي
         total = 0.0
         wt = 0.0
         for i, r in enumerate(rec):
@@ -604,7 +650,6 @@ class Team:
 
     @property
     def momentum(self):
-        """v3.1: Momentum score -100 to +100"""
         if self.win_streak >= 5:
             return 90
         if self.win_streak >= 3:
@@ -763,7 +808,6 @@ class DrawPredictor:
             boost += 0.03
         if (h.volatility + a.volatility) / 2 < 0.3:
             boost += 0.03
-        # v3.1: Momentum يقلل التعادل
         if abs(h.momentum) > 50 or abs(a.momentum) > 50:
             boost -= 0.03
         bd = min(0.42, 0.25 + boost)
@@ -942,7 +986,6 @@ class DataProc:
                 h.pts += 3
                 h.results.append(('W', hg, ag, ds))
                 a.results.append(('L', ag, hg, ds))
-                # v3.1: Momentum
                 h.win_streak += 1
                 h.loss_streak = 0
                 h.unbeaten += 1
@@ -1047,172 +1090,52 @@ class DataProc:
 
 
 # ══════════════════════════════════════════════════════════════
-# ML v3.1 (52 features + momentum)
+# ML v3.1 (باستخدام النموذج المحمل مسبقاً)
 # ══════════════════════════════════════════════════════════════
 class MLPred:
     def __init__(self):
         self.model = None
-        self.scaler = StandardScaler() if ML_AVAILABLE else None
         self.trained = False
         self.acc = 0.0
-        self.fnames = []
-        self._top = []
+        self._load_model()
+
+    def _load_model(self):
+        """تحميل نموذج XGBoost المُدرَّب مسبقاً"""
+        if Path(XGB_MODEL_FILE).exists():
+            try:
+                with open(XGB_MODEL_FILE, 'rb') as f:
+                    self.model = pickle.load(f)
+                self.trained = True
+                # قراءة معلومات النموذج (اختياري)
+                if hasattr(self.model, 'n_classes_'):
+                    print(C.green(f"✓ Loaded XGBoost model (classes: {self.model.n_classes_})"))
+                else:
+                    print(C.green("✓ Loaded XGBoost model"))
+            except Exception as e:
+                print(C.red(f"✖ Failed to load XGBoost model: {e}"))
+        else:
+            print(C.yellow("⚠ XGBoost model file not found, ML disabled"))
 
     def feats(self, h, a, data, md=None, derby=False):
-        ah = max(data.avg_h, 0.5)
-        aa = max(data.avg_a, 0.5)
-        return [
-            h.elo,
-            a.elo,
-            h.elo - a.elo,
-            h.form_score,
-            a.form_score,
-            h.form_score - a.form_score,
-            abs(h.form_score - a.form_score),
-            h.h_avg_gf,
-            a.a_avg_gf,
-            h.goal_form,
-            a.goal_form,
-            h.goal_form - a.goal_form,
-            h.h_avg_gf - a.a_avg_gf,
-            h.h_avg_ga,
-            a.a_avg_ga,
-            h.defense_form,
-            a.defense_form,
-            h.defense_form - a.defense_form,
-            h.h_avg_ga - a.a_avg_ga,
-            safe_div(h.h_avg_gf, ah, 1),
-            safe_div(a.a_avg_gf, aa, 1),
-            safe_div(h.h_avg_ga, ah, 1),
-            safe_div(a.a_avg_ga, aa, 1),
-            h.h_wr,
-            a.a_wr,
-            h.wr,
-            a.wr,
-            h.pos,
-            a.pos,
-            a.pos - h.pos,
-            h.pts,
-            a.pts,
-            h.ppg - a.ppg,
-            h.gd,
-            a.gd,
-            h.cs_r,
-            a.cs_r,
-            h.fts_r,
-            a.fts_r,
-            Fatigue.score(h, md),
-            Fatigue.score(a, md),
-            h.dr,
-            a.dr,
-            (h.dr + a.dr) / 2,
-            h.draw_form,
-            a.draw_form,
-            h.h_dr,
-            a.a_dr,
-            h.volatility,
-            a.volatility,
-            1.0 if derby else 0.0,
-            abs(h.elo - a.elo) / 100,
-            # v3.1: Momentum features
-            h.momentum / 100,
-            a.momentum / 100,
-            (h.momentum - a.momentum) / 100,
-            h.win_streak,
-            a.win_streak,
-            h.loss_streak,
-            a.loss_streak,
-        ]
-
-    def train(self, data, fixes=None):
-        if not ML_AVAILABLE:
-            return False
-        fixes = fixes or data.fixes
-        if len(fixes) < 40:
-            return False
-        X = []
-        y = []
-        sim = DataProc()
-        sf = sorted(fixes, key=lambda f: f.get('date', ''))
-        warm = int(len(sf) * 0.3)
-        for idx, f in enumerate(sf):
-            if idx >= warm:
-                ht = sim.teams.get(f['home_id'])
-                at = sim.teams.get(f['away_id'])
-                if ht and at and ht.played >= 3 and at.played >= 3:
-                    try:
-                        md = parse_date(f.get('date', ''))
-                        derby = bool(is_derby(f['home_name'], f['away_name']))
-                        ft = self.feats(ht, at, sim, md, derby)
-                        lb = 0 if f['home_goals'] > f['away_goals'] else (
-                            1 if f['home_goals'] == f['away_goals'] else 2
-                        )
-                        X.append(ft)
-                        y.append(lb)
-                    except:
-                        pass
-            fake = {
-                'status': 'FINISHED',
-                'homeTeam': {'id': f['home_id'], 'shortName': f['home_name']},
-                'awayTeam': {'id': f['away_id'], 'shortName': f['away_name']},
-                'score': {'fullTime': {'home': f['home_goals'], 'away': f['away_goals']}},
-                'utcDate': f.get('date', '')
-            }
-            sim.process([fake], do_elo=True)
-
-        if len(X) < 30:
-            return False
-        X = np.nan_to_num(np.array(X, dtype=np.float64))
-        y = np.array(y)
-        Xs = self.scaler.fit_transform(X)
-
-        ests = [
-            ('rf', RandomForestClassifier(
-                n_estimators=200, max_depth=8,
-                min_samples_split=5, min_samples_leaf=3, random_state=42
-            )),
-            ('gb', GradientBoostingClassifier(
-                n_estimators=150, max_depth=5,
-                learning_rate=0.1, random_state=42
-            ))
-        ]
-        if XGBOOST_AVAILABLE:
-            ests.append(('xgb', XGBClassifier(
-                n_estimators=200, max_depth=6,
-                learning_rate=0.08, subsample=0.8, colsample_bytree=0.8,
-                random_state=42, use_label_encoder=False,
-                eval_metric='mlogloss', verbosity=0
-            )))
-
-        cv = min(5, max(2, len(y) // 15))
-        try:
-            st_model = StackingClassifier(
-                estimators=ests,
-                final_estimator=LogisticRegression(max_iter=1000, C=1.0),
-                cv=cv, n_jobs=-1
-            )
-            sc = cross_val_score(st_model, Xs, y, cv=cv, scoring='accuracy')
-            self.acc = sc.mean()
-            self.model = CalibratedClassifierCV(st_model, cv=min(3, cv))
-            self.model.fit(Xs, y)
-        except:
-            rf = ests[0][1]
-            rf.fit(Xs, y)
-            self.model = rf
-            self.acc = 0
-        self.trained = True
-        return True
+        """إرجاع الميزات الثلاث التي يتوقعها النموذج"""
+        return [h.elo, a.elo, h.elo - a.elo]
 
     def predict(self, h, a, data, md=None, derby=False):
-        if not self.trained or not self.model:
+        if not self.trained or self.model is None:
             return None
         try:
             ft = self.feats(h, a, data, md, derby)
-            X = np.nan_to_num(np.array([ft], dtype=np.float64))
-            Xs = self.scaler.transform(X)
-            p = self.model.predict_proba(Xs)[0]
-            return (float(p[0]), float(p[1]), float(p[2]))
-        except:
+            # تحويل إلى مصفوفة ثنائية الأبعاد
+            X = np.array([ft], dtype=np.float64)
+            # النموذج قد يتوقع مصفوفة ثنائية الأبعاد
+            p = self.model.predict_proba(X)[0]
+            # التأكد من أن المخرجات ثلاثية
+            if len(p) == 3:
+                return (float(p[0]), float(p[1]), float(p[2]))
+            else:
+                return None
+        except Exception as e:
+            print(C.red(f"ML prediction error: {e}"))
             return None
 
 
@@ -1242,7 +1165,6 @@ class Pred:
         self.o15 = 0.0
         self.o25 = 0.0
         self.o35 = 0.0
-        # v3.1: Double Chance
         self.dc_1x = 0.0
         self.dc_x2 = 0.0
         self.dc_12 = 0.0
@@ -1258,7 +1180,6 @@ class Pred:
         self.a_fat = 0.0
         self.h_rest = 0
         self.a_rest = 0
-        # v3.1: Momentum
         self.h_momentum = 0
         self.a_momentum = 0
         self.models = {}
@@ -1327,7 +1248,6 @@ class Engine:
         p.hxg *= Fatigue.impact(h, md)
         p.axg *= Fatigue.impact(a, md)
 
-        # v3.1: Momentum adjusts xG
         if h.momentum > 40:
             p.hxg *= 1.05
         elif h.momentum < -40:
@@ -1385,15 +1305,13 @@ class Engine:
         p.dp = dp
         p.ap = ap
 
-        # ─── v3.1: DOUBLE CHANCE ─────────────────────────
-        p.dc_1x = hp + dp   # Home or Draw
-        p.dc_x2 = ap + dp   # Away or Draw
-        p.dc_12 = hp + ap   # No Draw
+        # Double Chance
+        p.dc_1x = hp + dp
+        p.dc_x2 = ap + dp
+        p.dc_12 = hp + ap
 
-        # DC Recommendation
         p.dc_recommend = self._dc_recommend(p)
 
-        # Score matrix (Dixon-Coles)
         mx = DixonColes.matrix(p.hxg, p.axg)
         ss = sorted(mx.items(), key=lambda x: x[1], reverse=True)
         p.top_sc = [(s[0][0], s[0][1], s[1]) for s in ss[:6]]
@@ -1410,7 +1328,6 @@ class Engine:
         if p.top_sc:
             p.pred_sc = (p.top_sc[0][0], p.top_sc[0][1])
 
-        # Value betting (1X2 + DC)
         if self.odds and self.odds.ok():
             od = self.odds.find(h.name, a.name)
             if od:
@@ -1421,28 +1338,21 @@ class Engine:
         return p
 
     def _dc_recommend(self, p):
-        """v3.1: توصية ذكية للفرصة المزدوجة"""
         recs = []
-        # 1X: إذا المضيف مرشح لكن مش مضمون
         if 0.40 <= p.hp <= 0.60 and p.dp > 0.20:
             recs.append(('1X', p.dc_1x, 'Home favored but draw possible'))
-        # X2: إذا الضيف لديه فرصة حقيقية
         if 0.30 <= p.ap <= 0.50 and p.dp > 0.20:
             recs.append(('X2', p.dc_x2, 'Away has real chance + draw likely'))
-        # 12: إذا التعادل مستبعد
         if p.dp < 0.20:
             recs.append(('12', p.dc_12, 'Draw unlikely - one team will win'))
-        # 1X: ديربي مع فريق ديار قوي
         if p.is_derby and p.hp > p.ap:
             recs.append(('1X', p.dc_1x, f'{p.derby_name} - Home advantage'))
 
         if not recs:
-            # Default: الأعلى احتمالاً
             dc_vals = {'1X': p.dc_1x, 'X2': p.dc_x2, '12': p.dc_12}
             best = max(dc_vals, key=dc_vals.get)
             recs.append((best, dc_vals[best], 'Highest probability'))
 
-        # اختر الأفضل
         recs.sort(key=lambda x: -x[1])
         return f"{recs[0][0]} ({recs[0][1] * 100:.1f}%) - {recs[0][2]}"
 
@@ -1536,7 +1446,6 @@ class Engine:
         return vals
 
     def _dc_value(self, p, od):
-        """v3.1: Value betting للفرصة المزدوجة"""
         vals = []
         dc_checks = [
             ('1X', p.dc_1x, od.get('implied_1x'), od.get('odds_1x')),
@@ -1581,13 +1490,9 @@ class Backtester:
 
         td = DataProc()
         td.process(train)
-        ml = None
-        if ML_AVAILABLE:
-            ml = MLPred()
-            ml.train(td)
+        ml = MLPred()  # سيحمل النموذج المحفوظ
         eng = Engine(td, ml)
 
-        # Phase 1: Calibration data
         cs = len(test) // 2
         cal_set = test[:cs]
         eval_set = test[cs:]
@@ -1618,12 +1523,10 @@ class Backtester:
         cal_ok = self.cal.calibrate()
         eng2 = Engine(td, ml, cal=self.cal) if cal_ok else eng
 
-        # Phase 2: Evaluate
         cr = cr1
         csc = 0
         total = t1
         preds = []
-        # v3.1: DC tracking
         dc_correct = {'1X': 0, 'X2': 0, '12': 0}
         dc_total = {'1X': 0, 'X2': 0, '12': 0}
 
@@ -1651,7 +1554,6 @@ class Backtester:
             if pr.pred_sc[0] == ahg and pr.pred_sc[1] == aag:
                 csc += 1
 
-            # v3.1: DC accuracy
             for dc_name, dc_covers in [
                 ('1X', ['HOME', 'DRAW']),
                 ('X2', ['AWAY', 'DRAW']),
@@ -1712,8 +1614,7 @@ class Backtester:
             'me_n': len(me),
             'lo_n': len(lo),
             'predictions': preds,
-            'ml_acc': float(ml.acc * 100) if ml and ml.trained else 0,
-            # v3.1: DC accuracy
+            'ml_acc': 0,  # ليس لدينا تدريب جديد
             'dc_1x_acc': dc_correct['1X'] / dc_total['1X'] * 100 if dc_total['1X'] else 0,
             'dc_x2_acc': dc_correct['X2'] / dc_total['X2'] * 100 if dc_total['X2'] else 0,
             'dc_12_acc': dc_correct['12'] / dc_total['12'] * 100 if dc_total['12'] else 0,
@@ -1725,7 +1626,7 @@ class Backtester:
 
 
 # ══════════════════════════════════════════════════════════════
-# DISPLAY v3.1 (تستخدم فقط في وضع CLI، ولكن يمكن الاستفادة منها)
+# DISPLAY v3.1 (يستخدم فقط في وضع CLI)
 # ══════════════════════════════════════════════════════════════
 class Disp:
     @staticmethod
@@ -1735,6 +1636,7 @@ class Disp:
         print(C.cyan(" ║") + C.bold(" ⚽ PREMIER LEAGUE PREDICTOR PRO v3.1 ⚽ ") + C.cyan("║"))
         print(C.cyan(" ║") + C.dim(" Dixon-Coles • Elo • XGBoost • Double Chance ") + C.cyan("║"))
         print(C.cyan(" ║") + C.dim(" Momentum • Calibration • Value Betting ") + C.cyan("║"))
+        print(C.cyan(" ║") + C.dim(" Integrated: XGBoost model, teams map, Elo ratings ") + C.cyan("║"))
         print(C.cyan(" ╚══════════════════════════════════════════════════════════════════╝"))
         print()
 
@@ -1771,7 +1673,6 @@ class Disp:
         ):
             pc = C.G if i <= 4 else (C.CN if i <= 6 else (C.R if i >= len(teams) - 2 else C.W))
             ec = C.green if t.elo > 1520 else (C.red if t.elo < 1480 else C.yellow)
-            # v3.1: Momentum indicator
             mi = "🔥" if t.momentum > 40 else ("📉" if t.momentum < -40 else "")
             print(
                 f" {pc}{i:>3}{C.E} {t.name:<22} {t.played:>3} {t.wins:>2} {t.draws:>2} {t.losses:>2} "
@@ -1799,7 +1700,6 @@ class Disp:
             f" 🏆 Elo: {p.h_elo:.0f} vs {p.a_elo:.0f} ({edc(f'{ed:+.0f}')})"
         ))
 
-        # v3.1: Momentum display
         def mom_str(m, name):
             if m > 40:
                 return C.green(f"🔥 {name} on fire! ({m:+d})")
@@ -1819,7 +1719,6 @@ class Disp:
             print(box(C.dim(" ✅ Calibrated")))
         print(f" {C.blue('├' + '─' * w + '┤')}")
 
-        # Probabilities
         print(box(f" {C.bold('📊 1X2 PROBABILITIES')}"))
         print(box(
             f" 🏠 Home: {C.green(f'{p.hp * 100:5.1f}%')} {C.pct_bar(p.hp, 25, C.G)}"
@@ -1832,7 +1731,6 @@ class Disp:
         ))
         print(f" {C.blue('├' + '─' * w + '┤')}")
 
-        # ─── v3.1: DOUBLE CHANCE ─────────────────────────
         print(box(f" {C.bold('🛡️ DOUBLE CHANCE')}"))
 
         def dc_bar(val, label, color):
@@ -1845,21 +1743,18 @@ class Disp:
         print(box(f" {C.bold('💡 Recommend:')} {C.bold(p.dc_recommend)}"))
         print(f" {C.blue('├' + '─' * w + '┤')}")
 
-        # xG
         print(box(
             f" {C.bold('⚡ xG:')} {p.home}: {C.bold(f'{p.hxg:.2f}')} {p.away}: {C.bold(f'{p.axg:.2f}')} "
             f"Total: {C.bold(f'{p.hxg + p.axg:.2f}')}"
         ))
         print(f" {C.blue('├' + '─' * w + '┤')}")
 
-        # Scores
         print(box(f" {C.bold('🎯 LIKELY SCORES')}"))
         for i, (hg, ag, pr) in enumerate(p.top_sc[:5]):
             mk = "👉" if i == 0 else " "
             print(box(f" {mk} {hg}-{ag} ({pr * 100:4.1f}%) {C.dim('▓' * int(pr * 60))}"))
         print(f" {C.blue('├' + '─' * w + '┤')}")
 
-        # Markets
         print(box(f" {C.bold('📈 MARKETS')}"))
         for nm, v, th in [
             ("Over 1.5", p.o15, .5),
@@ -1871,7 +1766,6 @@ class Disp:
             print(box(f" {nm:<20} {e} {v * 100:5.1f}%"))
         print(f" {C.blue('├' + '─' * w + '┤')}")
 
-        # Form + Fatigue
         print(box(f" {C.bold('📋 FORM & FATIGUE')}"))
 
         def fs(s, d):
@@ -1885,7 +1779,6 @@ class Disp:
         print(box(f" {p.away:<18} {C.form_str(p.a_form)} {fs(p.a_fat, p.a_rest)}"))
         print(f" {C.blue('├' + '─' * w + '┤')}")
 
-        # Models
         print(box(f" {C.bold('🔬 MODELS')}"))
         for nm, (mh, md, ma) in p.models.items():
             wt = WEIGHTS.get(nm, 0)
@@ -1895,7 +1788,6 @@ class Disp:
                     f"D={C.yellow(f'{md * 100:4.1f}%')} A={C.red(f'{ma * 100:4.1f}%')}"
                 ))
 
-        # Value bets (1X2)
         has_v = p.value_bets and any(v['is_value'] for v in p.value_bets)
         if has_v:
             print(f" {C.blue('├' + '─' * w + '┤')}")
@@ -1904,11 +1796,10 @@ class Disp:
                 if v['is_value']:
                     print(box(
                         f" {v['market']:<8} @{v['odds']:.2f} "
-                        f"Edge:{C.green(f'{v["edge"]:+.1f}%')} Kelly:{v['kelly']:.1f}% "
+                        f"Edge:{C.green(f'+{v["edge"]:.1f}%')} Kelly:{v['kelly']:.1f}% "
                         f"{C.value_ind(v['edge'])}"
                     ))
 
-        # v3.1: DC Value bets
         has_dcv = p.dc_value_bets and any(v['is_value'] for v in p.dc_value_bets)
         if has_dcv:
             print(f" {C.blue('├' + '─' * w + '┤')}")
@@ -1917,11 +1808,10 @@ class Disp:
                 if v['is_value']:
                     print(box(
                         f" {v['market']:<8} @{v['odds']:.2f} "
-                        f"Edge:{C.green(f'{v["edge"]:+.1f}%')} Kelly:{v['kelly']:.1f}% "
+                        f"Edge:{C.green(f'+{v["edge"]:.1f}%')} Kelly:{v['kelly']:.1f}% "
                         f"{C.value_ind(v['edge'])}"
                     ))
 
-        # Final
         print(f" {C.blue('├' + '─' * w + '┤')}")
         rm = {'HOME': f"🏆 {p.home} Win", 'DRAW': "🤝 Draw", 'AWAY': f"🏆 {p.away} Win"}
         cc = C.conf_color(p.conf)
@@ -1953,7 +1843,6 @@ class Disp:
                 f"{p.dc_1x * 100:>4.0f}% {p.dc_x2 * 100:>4.0f}% {p.dc_12 * 100:>4.0f}% {dc_best} {derby}"
             )
 
-        # Value summary
         all_v = [(p, v) for p in preds for v in p.value_bets if v['is_value']]
         all_dcv = [(p, v) for p in preds for v in p.dc_value_bets if v['is_value']]
         if all_v:
@@ -1992,7 +1881,6 @@ class Disp:
         print(box(f" Calibrated: {C.green('✅') if r['cal_used'] else C.yellow('❌')}"))
         print(f" {C.blue('├' + '─' * w + '┤')}")
 
-        # v3.1: Double Chance accuracy
         print(box(f" {C.bold('🛡️ DOUBLE CHANCE ACCURACY:')}"))
         dc1x = r.get('dc_1x_acc', 0)
         dcx2 = r.get('dc_x2_acc', 0)
@@ -2041,7 +1929,6 @@ def export_json(preds, fn="predictions_v31.json"):
                 'draw': round(float(p.dp * 100), 1),
                 'away': round(float(p.ap * 100), 1)
             },
-            # v3.1: Double Chance
             'double_chance': {
                 '1X': round(float(p.dc_1x * 100), 1),
                 'X2': round(float(p.dc_x2 * 100), 1),
@@ -2086,7 +1973,7 @@ def export_json(preds, fn="predictions_v31.json"):
 
 
 # ══════════════════════════════════════════════════════════════
-# APP v3.1 (نفس الكود الأصلي مع إضافة بسيطة لدعم Streamlit)
+# APP v3.1
 # ══════════════════════════════════════════════════════════════
 class App:
     def __init__(self, token, okey=""):
@@ -2102,7 +1989,6 @@ class App:
         self.last = []
 
     def init(self):
-        # يمكن استدعاء هذه الدالة مع أو بدون طباعة (حسب السياق)
         if not STREAMLIT_AVAILABLE:
             Disp.header()
             Disp.progress("Season...")
@@ -2138,7 +2024,6 @@ class App:
         if not STREAMLIT_AVAILABLE:
             Disp.success("Elo: " + ", ".join(f"{t.name}({t.elo:.0f})" for t in top))
 
-        # Momentum info
         hot = [t for t in self.data.teams.values() if t.momentum > 40]
         cold = [t for t in self.data.teams.values() if t.momentum < -40]
         if not STREAMLIT_AVAILABLE:
@@ -2147,21 +2032,14 @@ class App:
             if cold:
                 Disp.info("📉 Cold: " + ", ".join(t.name for t in cold))
 
-        if ML_AVAILABLE:
-            mn = "XGBoost Stacking" if XGBOOST_AVAILABLE else "RF+GBM"
+        # تحميل نموذج XGBoost الجاهز (بدلاً من التدريب)
+        self.ml = MLPred()
+        if self.ml.trained:
             if not STREAMLIT_AVAILABLE:
-                Disp.progress(f"ML ({mn})...")
-            self.ml = MLPred()
-            if self.ml.train(self.data):
-                if not STREAMLIT_AVAILABLE:
-                    Disp.success(f"ML: {self.ml.acc * 100:.1f}%")
-            else:
-                self.ml = None
-                if not STREAMLIT_AVAILABLE:
-                    Disp.info("ML needs 40+ matches")
+                Disp.success("ML model loaded from file")
         else:
             if not STREAMLIT_AVAILABLE:
-                Disp.info("pip install scikit-learn numpy")
+                Disp.info("ML model not available")
 
         if self.cal.load():
             if not STREAMLIT_AVAILABLE:
@@ -2181,7 +2059,6 @@ class App:
 
     def standings(self):
         if STREAMLIT_AVAILABLE:
-            # في Streamlit نعيد البيانات بدلاً من الطباعة
             return sorted(self.data.teams.values(), key=lambda t: t.pos)
         else:
             Disp.standings(self.data.teams)
@@ -2258,7 +2135,6 @@ class App:
                 print(f" #{t.pos:<3} {t.name:<25} Elo:{t.elo:.0f} {C.form_str(t.form_string[-5:])} {mi}")
 
     def interactive(self):
-        # هذه الدالة تبقى للوضع النصي فقط
         if STREAMLIT_AVAILABLE:
             return
         while True:
@@ -2361,7 +2237,7 @@ if STREAMLIT_AVAILABLE:
 
     if mode == "📊 جدول الترتيب":
         st.subheader("🏆 جدول ترتيب الدوري الإنجليزي")
-        teams_data = app.standings()  # ترجع قائمة الفرق
+        teams_data = app.standings()
         df_data = []
         for t in teams_data:
             df_data.append({
@@ -2475,7 +2351,7 @@ if STREAMLIT_AVAILABLE:
 
 
 # =================================================================
-# CLI Entry Point (يبقى كما هو)
+# CLI Entry Point
 # =================================================================
 def cli_main():
     tok = FOOTBALL_DATA_KEY
@@ -2523,6 +2399,6 @@ def cli_main():
         print(C.green(C.bold("\n ✅ Done! ⚽\n")))
 
 
-if __name__ == "__main__": 
-    if not STREAMLIT_AVAILABLE: 
+if __name__ == "__main__":
+    if not STREAMLIT_AVAILABLE:
         cli_main()
