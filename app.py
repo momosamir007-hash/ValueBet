@@ -1,3 +1,4 @@
+
 #!/usr/bin/env python3
 """
 ╔══════════════════════════════════════════════════════════════════════╗
@@ -26,6 +27,13 @@ from datetime import datetime, timedelta
 from collections import defaultdict
 from typing import Dict, List, Optional, Tuple
 from pathlib import Path
+
+# استيراد Streamlit (سيكون متاحاً فقط عند تشغيل التطبيق عبر streamlit)
+try:
+    import streamlit as st
+    STREAMLIT_AVAILABLE = True
+except ImportError:
+    STREAMLIT_AVAILABLE = False
 
 ML_AVAILABLE = False
 XGBOOST_AVAILABLE = False
@@ -1177,14 +1185,14 @@ class MLPred:
 
         cv = min(5, max(2, len(y) // 15))
         try:
-            st = StackingClassifier(
+            st_model = StackingClassifier(
                 estimators=ests,
                 final_estimator=LogisticRegression(max_iter=1000, C=1.0),
                 cv=cv, n_jobs=-1
             )
-            sc = cross_val_score(st, Xs, y, cv=cv, scoring='accuracy')
+            sc = cross_val_score(st_model, Xs, y, cv=cv, scoring='accuracy')
             self.acc = sc.mean()
-            self.model = CalibratedClassifierCV(st, cv=min(3, cv))
+            self.model = CalibratedClassifierCV(st_model, cv=min(3, cv))
             self.model.fit(Xs, y)
         except:
             rf = ests[0][1]
@@ -1716,7 +1724,7 @@ class Backtester:
 
 
 # ══════════════════════════════════════════════════════════════
-# DISPLAY v3.1
+# DISPLAY v3.1 (تستخدم فقط في وضع CLI، ولكن يمكن الاستفادة منها)
 # ══════════════════════════════════════════════════════════════
 class Disp:
     @staticmethod
@@ -2073,11 +2081,11 @@ def export_json(preds, fn="predictions_v31.json"):
         out.append(e)
     with open(fn, 'w', encoding='utf-8') as f:
         json.dump(out, f, indent=2, ensure_ascii=False)
-    Disp.success(f"Exported → {fn}")
+    print(C.green(f"Exported → {fn}"))
 
 
 # ══════════════════════════════════════════════════════════════
-# APP v3.1
+# APP v3.1 (نفس الكود الأصلي مع إضافة بسيطة لدعم Streamlit)
 # ══════════════════════════════════════════════════════════════
 class App:
     def __init__(self, token, okey=""):
@@ -2093,77 +2101,103 @@ class App:
         self.last = []
 
     def init(self):
-        Disp.header()
-        Disp.progress("Season...")
+        # يمكن استدعاء هذه الدالة مع أو بدون طباعة (حسب السياق)
+        if not STREAMLIT_AVAILABLE:
+            Disp.header()
+            Disp.progress("Season...")
         self.sy = self.api.season_year()
         if not self.sy:
-            Disp.error("Failed")
+            if not STREAMLIT_AVAILABLE:
+                Disp.error("Failed")
             return False
-        Disp.success(f"Season: {self.sy}/{self.sy + 1}")
+        if not STREAMLIT_AVAILABLE:
+            Disp.success(f"Season: {self.sy}/{self.sy + 1}")
 
-        Disp.progress("Matches...")
+        if not STREAMLIT_AVAILABLE:
+            Disp.progress("Matches...")
         self.raw = self.api.finished(self.sy)
         if not self.raw:
-            Disp.error("No matches")
+            if not STREAMLIT_AVAILABLE:
+                Disp.error("No matches")
             return False
-        Disp.success(f"{len(self.raw)} matches")
+        if not STREAMLIT_AVAILABLE:
+            Disp.success(f"{len(self.raw)} matches")
 
-        Disp.progress("Processing + Elo + Momentum...")
+        if not STREAMLIT_AVAILABLE:
+            Disp.progress("Processing + Elo + Momentum...")
         self.data.process(self.raw)
         if not self.data.teams:
-            Disp.error("No teams")
+            if not STREAMLIT_AVAILABLE:
+                Disp.error("No teams")
             return False
-        Disp.success(f"{len(self.data.teams)} teams | H:{self.data.avg_h:.2f} A:{self.data.avg_a:.2f}")
+        if not STREAMLIT_AVAILABLE:
+            Disp.success(f"{len(self.data.teams)} teams | H:{self.data.avg_h:.2f} A:{self.data.avg_a:.2f}")
 
         top = sorted(self.data.teams.values(), key=lambda t: t.elo, reverse=True)[:3]
-        Disp.success("Elo: " + ", ".join(f"{t.name}({t.elo:.0f})" for t in top))
+        if not STREAMLIT_AVAILABLE:
+            Disp.success("Elo: " + ", ".join(f"{t.name}({t.elo:.0f})" for t in top))
 
         # Momentum info
         hot = [t for t in self.data.teams.values() if t.momentum > 40]
         cold = [t for t in self.data.teams.values() if t.momentum < -40]
-        if hot:
-            Disp.success("🔥 Hot: " + ", ".join(t.name for t in hot))
-        if cold:
-            Disp.info("📉 Cold: " + ", ".join(t.name for t in cold))
+        if not STREAMLIT_AVAILABLE:
+            if hot:
+                Disp.success("🔥 Hot: " + ", ".join(t.name for t in hot))
+            if cold:
+                Disp.info("📉 Cold: " + ", ".join(t.name for t in cold))
 
         if ML_AVAILABLE:
             mn = "XGBoost Stacking" if XGBOOST_AVAILABLE else "RF+GBM"
-            Disp.progress(f"ML ({mn})...")
+            if not STREAMLIT_AVAILABLE:
+                Disp.progress(f"ML ({mn})...")
             self.ml = MLPred()
             if self.ml.train(self.data):
-                Disp.success(f"ML: {self.ml.acc * 100:.1f}%")
+                if not STREAMLIT_AVAILABLE:
+                    Disp.success(f"ML: {self.ml.acc * 100:.1f}%")
             else:
                 self.ml = None
-                Disp.info("ML needs 40+ matches")
+                if not STREAMLIT_AVAILABLE:
+                    Disp.info("ML needs 40+ matches")
         else:
-            Disp.info("pip install scikit-learn numpy")
+            if not STREAMLIT_AVAILABLE:
+                Disp.info("pip install scikit-learn numpy")
 
         if self.cal.load():
-            Disp.success("Calibration loaded")
+            if not STREAMLIT_AVAILABLE:
+                Disp.success("Calibration loaded")
 
         if self.odds.ok():
-            Disp.progress("Odds...")
+            if not STREAMLIT_AVAILABLE:
+                Disp.progress("Odds...")
             od = self.odds.fetch()
-            if od:
+            if od and not STREAMLIT_AVAILABLE:
                 Disp.success(f"Odds: {len(od)} matches")
 
         self.eng = Engine(self.data, self.ml, self.odds, self.cal)
-        Disp.success("Engine v3.1 ready! 🚀")
+        if not STREAMLIT_AVAILABLE:
+            Disp.success("Engine v3.1 ready! 🚀")
         return True
 
     def standings(self):
-        Disp.standings(self.data.teams)
+        if STREAMLIT_AVAILABLE:
+            # في Streamlit نعيد البيانات بدلاً من الطباعة
+            return sorted(self.data.teams.values(), key=lambda t: t.pos)
+        else:
+            Disp.standings(self.data.teams)
 
     def predict(self, days=14):
-        Disp.section("🔮 PREDICTIONS")
-        Disp.progress(f"Upcoming ({days}d)...")
+        if not STREAMLIT_AVAILABLE:
+            Disp.section("🔮 PREDICTIONS")
+            Disp.progress(f"Upcoming ({days}d)...")
         up = self.api.upcoming(days)
         if not up:
             up = self.api.scheduled(self.sy)
         if not up:
-            Disp.error("None")
+            if not STREAMLIT_AVAILABLE:
+                Disp.error("None")
             return []
-        Disp.success(f"{len(up)} matches")
+        if not STREAMLIT_AVAILABLE:
+            Disp.success(f"{len(up)} matches")
         preds = []
         for i, m in enumerate(up, 1):
             hid = m.get('homeTeam', {}).get('id')
@@ -2173,8 +2207,9 @@ class App:
             pr = self.eng.predict(hid, aid, m.get('utcDate', ''))
             if pr:
                 preds.append(pr)
-                Disp.card(pr, i)
-        if preds:
+                if not STREAMLIT_AVAILABLE:
+                    Disp.card(pr, i)
+        if preds and not STREAMLIT_AVAILABLE:
             Disp.summary(preds)
         self.last = preds
         return preds
@@ -2187,32 +2222,44 @@ class App:
             if an.lower() in t.name.lower():
                 at = t
         if not ht or not at:
-            Disp.error("Not found")
-            self.teams()
-            return
+            if not STREAMLIT_AVAILABLE:
+                Disp.error("Not found")
+                self.teams()
+            return None
         pr = self.eng.predict(ht.id, at.id, "Custom")
         if pr:
-            Disp.card(pr, 1)
+            if not STREAMLIT_AVAILABLE:
+                Disp.card(pr, 1)
             self.last = [pr]
+        return pr
 
     def backtest(self):
-        Disp.section("🔬 BACKTEST v3.1")
-        Disp.progress("Testing with DC tracking...")
+        if not STREAMLIT_AVAILABLE:
+            Disp.section("🔬 BACKTEST v3.1")
+            Disp.progress("Testing with DC tracking...")
         r = self.bt.run(self.raw)
-        Disp.backtest(r)
+        if not STREAMLIT_AVAILABLE:
+            Disp.backtest(r)
         if r.get('cal_used'):
             self.cal = self.bt.cal
             self.cal.save()
-            self.eng = Engine(self.data, self.ml, self.odds, self.cal)
-            Disp.success("Calibration saved & applied!")
+            if not STREAMLIT_AVAILABLE:
+                Disp.success("Calibration saved & applied!")
+        return r
 
     def teams(self):
-        Disp.section("📋 TEAMS")
-        for t in sorted(self.data.teams.values(), key=lambda t: t.pos):
-            mi = "🔥" if t.momentum > 40 else ("📉" if t.momentum < -40 else "")
-            print(f" #{t.pos:<3} {t.name:<25} Elo:{t.elo:.0f} {C.form_str(t.form_string[-5:])} {mi}")
+        if STREAMLIT_AVAILABLE:
+            return sorted(self.data.teams.values(), key=lambda t: t.pos)
+        else:
+            Disp.section("📋 TEAMS")
+            for t in sorted(self.data.teams.values(), key=lambda t: t.pos):
+                mi = "🔥" if t.momentum > 40 else ("📉" if t.momentum < -40 else "")
+                print(f" #{t.pos:<3} {t.name:<25} Elo:{t.elo:.0f} {C.form_str(t.form_string[-5:])} {mi}")
 
     def interactive(self):
+        # هذه الدالة تبقى للوضع النصي فقط
+        if STREAMLIT_AVAILABLE:
+            return
         while True:
             print(f"\n {C.cyan(C.bold('═══ MENU v3.1 ═══'))}")
             for n, e, l in [
@@ -2261,14 +2308,9 @@ class App:
 
 
 # =================================================================
-# Streamlit Interface (إضافة جديدة - لا تحذف أي شيء)
+# Streamlit Interface (واجهة Streamlit الجديدة)
 # =================================================================
-import streamlit as st
-import sys
-import os
-
-# دالة لتشغيل واجهة Streamlit
-def run_streamlit():
+if STREAMLIT_AVAILABLE:
     st.set_page_config(
         page_title="Premier League Predictor Pro v3.1",
         page_icon="⚽",
@@ -2291,11 +2333,9 @@ def run_streamlit():
 
     st.sidebar.title("⚙️ الإعدادات")
 
-    # إدخال مفاتيح API (يمكن تركها افتراضية)
     fb_key = st.sidebar.text_input("🔑 football-data.org key", value=FOOTBALL_DATA_KEY, type="password")
     odds_key = st.sidebar.text_input("🔑 The Odds API key", value=ODDS_API_KEY, type="password")
 
-    # زر التهيئة
     if st.sidebar.button("🚀 تهيئة النظام"):
         with st.spinner("جاري تحميل البيانات والتدريب..."):
             app = App(fb_key, odds_key)
@@ -2313,7 +2353,6 @@ def run_streamlit():
 
     app = st.session_state['app']
 
-    # شريط جانبي - اختيار الوظيفة
     mode = st.sidebar.radio(
         "📌 اختر الوظيفة",
         ["🔮 توقع المباريات القادمة", "⚽ توقع مباراة مخصصة", "📊 جدول الترتيب", "🔬 اختبار رجعي", "💾 تصدير التنبؤات"]
@@ -2321,10 +2360,10 @@ def run_streamlit():
 
     if mode == "📊 جدول الترتيب":
         st.subheader("🏆 جدول ترتيب الدوري الإنجليزي")
-        # عرض الترتيب باستخدام st.dataframe
-        teams_data = []
-        for t in sorted(app.data.teams.values(), key=lambda t: t.pos):
-            teams_data.append({
+        teams_data = app.standings()  # ترجع قائمة الفرق
+        df_data = []
+        for t in teams_data:
+            df_data.append({
                 "#": t.pos,
                 "الفريق": t.name,
                 "لعب": t.played,
@@ -2339,30 +2378,18 @@ def run_streamlit():
                 "آخر 5": t.form_string[-5:],
                 "زخم": t.momentum
             })
-        st.dataframe(teams_data, use_container_width=True)
+        st.dataframe(df_data, use_container_width=True)
 
     elif mode == "🔮 توقع المباريات القادمة":
         days = st.slider("عدد الأيام القادمة", min_value=1, max_value=30, value=14)
         if st.button("🔍 توقع"):
             with st.spinner("جاري جلب المباريات..."):
-                up = app.api.upcoming(days)
-                if not up:
-                    up = app.api.scheduled(app.sy)
-                if not up:
+                preds = app.predict(days)
+                if not preds:
                     st.warning("لا توجد مباريات قادمة")
                 else:
-                    st.success(f"تم العثور على {len(up)} مباراة")
-                    preds = []
-                    for i, m in enumerate(up):
-                        hid = m.get('homeTeam', {}).get('id')
-                        aid = m.get('awayTeam', {}).get('id')
-                        if hid and aid:
-                            pr = app.eng.predict(hid, aid, m.get('utcDate', ''))
-                            if pr:
-                                preds.append(pr)
-                    # تخزين في session_state
+                    st.success(f"تم العثور على {len(preds)} مباراة")
                     st.session_state['last_preds'] = preds
-                    # عرض كل مباراة في expander
                     for i, pr in enumerate(preds):
                         with st.expander(f"⚽ {pr.home} vs {pr.away}"):
                             col1, col2, col3 = st.columns(3)
@@ -2370,7 +2397,6 @@ def run_streamlit():
                             col2.metric("🤝 تعادل", f"{pr.dp*100:.1f}%")
                             col3.metric("✈️ فوز الضيف", f"{pr.ap*100:.1f}%")
 
-                            # أشرطة التقدم
                             st.markdown("##### الاحتمالات")
                             st.markdown(f"<div class='prob-bar'><div class='home-bar' style='width:{pr.hp*100}%'></div></div>", unsafe_allow_html=True)
                             st.caption(f"🏠 {pr.hp*100:.1f}%")
@@ -2379,8 +2405,7 @@ def run_streamlit():
                             st.markdown(f"<div class='prob-bar'><div class='away-bar' style='width:{pr.ap*100}%'></div></div>", unsafe_allow_html=True)
                             st.caption(f"✈️ {pr.ap*100:.1f}%")
 
-                            st.markdown("---")
-                            st.markdown(f"**⚡ xG المتوقع:** {pr.home} {pr.hxg:.2f} - {pr.axg:.2f} {pr.away}")
+                            st.markdown(f"**⚡ xG:** {pr.hxg:.2f} - {pr.axg:.2f}")
                             st.markdown(f"**🎯 النتيجة الأكثر احتمالاً:** {pr.pred_sc[0]}-{pr.pred_sc[1]} ({pr.conf:.1f}% ثقة)")
                             st.markdown(f"**🛡️ الفرص المزدوجة:** 1X={pr.dc_1x*100:.1f}% , X2={pr.dc_x2*100:.1f}% , 12={pr.dc_12*100:.1f}%")
                             st.markdown(f"**💡 التوصية:** {pr.dc_recommend}")
@@ -2401,33 +2426,31 @@ def run_streamlit():
         if home == away:
             st.warning("اختر فريقين مختلفين")
         elif st.button("🔮 توقع"):
-            ht = next((t for t in app.data.teams.values() if t.name == home), None)
-            at = next((t for t in app.data.teams.values() if t.name == away), None)
-            if ht and at:
-                pr = app.eng.predict(ht.id, at.id, "Custom")
-                if pr:
-                    st.session_state['last_preds'] = [pr]
-                    # عرض نفس طريقة المباريات القادمة (يمكن إعادة استخدام كود)
-                    col1, col2, col3 = st.columns(3)
-                    col1.metric("🏠 فوز المضيف", f"{pr.hp*100:.1f}%")
-                    col2.metric("🤝 تعادل", f"{pr.dp*100:.1f}%")
-                    col3.metric("✈️ فوز الضيف", f"{pr.ap*100:.1f}%")
-                    st.markdown("##### الاحتمالات")
-                    st.markdown(f"<div class='prob-bar'><div class='home-bar' style='width:{pr.hp*100}%'></div></div>", unsafe_allow_html=True)
-                    st.caption(f"🏠 {pr.hp*100:.1f}%")
-                    st.markdown(f"<div class='prob-bar'><div class='draw-bar' style='width:{pr.dp*100}%'></div></div>", unsafe_allow_html=True)
-                    st.caption(f"🤝 {pr.dp*100:.1f}%")
-                    st.markdown(f"<div class='prob-bar'><div class='away-bar' style='width:{pr.ap*100}%'></div></div>", unsafe_allow_html=True)
-                    st.caption(f"✈️ {pr.ap*100:.1f}%")
-                    st.markdown(f"**⚡ xG:** {pr.hxg:.2f} - {pr.axg:.2f}")
-                    st.markdown(f"**🎯 النتيجة:** {pr.pred_sc[0]}-{pr.pred_sc[1]}")
-                    st.markdown(f"**🛡️ DC:** 1X={pr.dc_1x*100:.1f}% , X2={pr.dc_x2*100:.1f}% , 12={pr.dc_12*100:.1f}%")
-                    st.markdown(f"**💡 توصية:** {pr.dc_recommend}")
+            pr = app.custom(home, away)
+            if pr:
+                st.session_state['last_preds'] = [pr]
+                col1, col2, col3 = st.columns(3)
+                col1.metric("🏠 فوز المضيف", f"{pr.hp*100:.1f}%")
+                col2.metric("🤝 تعادل", f"{pr.dp*100:.1f}%")
+                col3.metric("✈️ فوز الضيف", f"{pr.ap*100:.1f}%")
+                st.markdown("##### الاحتمالات")
+                st.markdown(f"<div class='prob-bar'><div class='home-bar' style='width:{pr.hp*100}%'></div></div>", unsafe_allow_html=True)
+                st.caption(f"🏠 {pr.hp*100:.1f}%")
+                st.markdown(f"<div class='prob-bar'><div class='draw-bar' style='width:{pr.dp*100}%'></div></div>", unsafe_allow_html=True)
+                st.caption(f"🤝 {pr.dp*100:.1f}%")
+                st.markdown(f"<div class='prob-bar'><div class='away-bar' style='width:{pr.ap*100}%'></div></div>", unsafe_allow_html=True)
+                st.caption(f"✈️ {pr.ap*100:.1f}%")
+                st.markdown(f"**⚡ xG:** {pr.hxg:.2f} - {pr.axg:.2f}")
+                st.markdown(f"**🎯 النتيجة:** {pr.pred_sc[0]}-{pr.pred_sc[1]}")
+                st.markdown(f"**🛡️ DC:** 1X={pr.dc_1x*100:.1f}% , X2={pr.dc_x2*100:.1f}% , 12={pr.dc_12*100:.1f}%")
+                st.markdown(f"**💡 توصية:** {pr.dc_recommend}")
+            else:
+                st.error("لم يتم العثور على الفرق أو فشل التوقع")
 
     elif mode == "🔬 اختبار رجعي":
         if st.button("▶️ بدء الاختبار"):
             with st.spinner("جاري التحليل..."):
-                r = app.bt.run(app.raw)
+                r = app.backtest()
                 if 'error' in r:
                     st.error(r['error'])
                 else:
@@ -2439,11 +2462,6 @@ def run_streamlit():
                     col1.metric("🛡️ دقة 1X", f"{r.get('dc_1x_acc',0):.1f}%")
                     col2.metric("🛡️ دقة X2", f"{r.get('dc_x2_acc',0):.1f}%")
                     col3.metric("🛡️ دقة 12", f"{r.get('dc_12_acc',0):.1f}%")
-
-                    if r.get('cal_used'):
-                        app.cal = app.bt.cal
-                        app.cal.save()
-                        st.success("✅ تم تطبيق المعايرة وحفظها!")
 
     elif mode == "💾 تصدير التنبؤات":
         if 'last_preds' in st.session_state and st.session_state['last_preds']:
@@ -2460,10 +2478,10 @@ def run_streamlit():
 # =================================================================
 def cli_main():
     tok = FOOTBALL_DATA_KEY
-    if tok == "ضع_مفتاح_football_data_هنا":
+    if tok == "xxxxx":
         tok = os.environ.get("FOOTBALL_DATA_KEY", "")
     okey = ODDS_API_KEY
-    if okey == "ضع_مفتاح_odds_api_هنا":
+    if okey == "xxxxx":
         okey = os.environ.get("ODDS_API_KEY", "")
 
     if not tok:
@@ -2506,7 +2524,8 @@ def cli_main():
 
 if __name__ == "__main__":
     # التحقق مما إذا كان التشغيل عبر Streamlit
-    if "streamlit" in sys.argv[0] or os.environ.get("STREAMLIT_RUN", False):
-        run_streamlit()
+    if STREAMLIT_AVAILABLE and ("streamlit" in sys.argv[0] or os.environ.get("STREAMLIT_RUN", False)):
+        # لا شيء، لأن run_streamlit سيتم استدعاؤه تلقائياً بسبب استيراد Streamlit
+        pass  # الدالة run_streamlit تم تعريفها وتنفيذها تلقائياً
     else:
         cli_main()
