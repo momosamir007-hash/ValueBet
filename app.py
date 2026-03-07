@@ -20,6 +20,7 @@ import requests
 import json
 import math
 import os
+import sys 
 import time
 import hashlib
 import pickle
@@ -2522,10 +2523,6 @@ def cli_main():
         print(C.green(C.bold("\n ✅ Done! ⚽\n")))
 
 
-if __name__ == "__main__":
-    # التحقق مما إذا كان التشغيل عبر Streamlit
-    if STREAMLIT_AVAILABLE and ("streamlit" in sys.argv[0] or os.environ.get("STREAMLIT_RUN", False)):
-        # لا شيء، لأن run_streamlit سيتم استدعاؤه تلقائياً بسبب استيراد Streamlit
-        pass  # الدالة run_streamlit تم تعريفها وتنفيذها تلقائياً
-    else:
+if __name__ == "__main__": 
+    if not STREAMLIT_AVAILABLE: 
         cli_main()
