@@ -1895,7 +1895,7 @@ class Disp:
                 if v['is_value']:
                     print(box(
                         f" {v['market']:<8} @{v['odds']:.2f} "
-                        f"Edge:{C.green(f'{v[\"edge\"]:+.1f}%')} Kelly:{v['kelly']:.1f}% "
+                        f"Edge:{C.green(f'{v["edge"]:+.1f}%')} Kelly:{v['kelly']:.1f}% "
                         f"{C.value_ind(v['edge'])}"
                     ))
 
@@ -1908,7 +1908,7 @@ class Disp:
                 if v['is_value']:
                     print(box(
                         f" {v['market']:<8} @{v['odds']:.2f} "
-                        f"Edge:{C.green(f'{v[\"edge\"]:+.1f}%')} Kelly:{v['kelly']:.1f}% "
+                        f"Edge:{C.green(f'{v["edge"]:+.1f}%')} Kelly:{v['kelly']:.1f}% "
                         f"{C.value_ind(v['edge'])}"
                     ))
 
@@ -1952,14 +1952,14 @@ class Disp:
             for p, v in all_v:
                 print(
                     f" 🔥 {p.home} vs {p.away}: {v['market']} @{v['odds']:.2f} "
-                    f"(Edge:{C.green(f'+{v[\"edge\"]:.1f}%')})"
+                    f"(Edge:{C.green(f'+{v["edge"]:.1f}%')})"
                 )
         if all_dcv:
             print(f"\n {C.bold(C.cyan('🛡️ DC VALUE BETS:'))}")
             for p, v in all_dcv:
                 print(
                     f" 🛡️ {p.home} vs {p.away}: {v['market']} @{v['odds']:.2f} "
-                    f"(Edge:{C.green(f'+{v[\"edge\"]:.1f}%')})"
+                    f"(Edge:{C.green(f'+{v["edge"]:.1f}%')})"
                 )
 
     @staticmethod
