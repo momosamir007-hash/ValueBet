@@ -2179,9 +2179,9 @@ class Disp:
             f"{C.green('✅') if r['cal_used'] else C.yellow('❌')}"
         ))
         if r.get('ml_acc', 0) > 0:
-    ml_acc_val = r['ml_acc']
-    ml_acc_str = f"{ml_acc_val:.1f}%"
-    print(box(f" ML CV Acc: {C.green(ml_acc_str)}"))
+            ml_acc_val = r['ml_acc']
+            ml_acc_str = f"{ml_acc_val:.1f}%"
+            print(box(f" ML CV Acc: {C.green(ml_acc_str)}"))
         print(f" {C.blue('├' + '─' * w + '┤')}")
         # DC accuracy
         print(box(f" {C.bold('🛡️ DOUBLE CHANCE ACCURACY:')}"))
