@@ -1,22 +1,13 @@
 #!/usr/bin/env python3
 """
 ╔══════════════════════════════════════════════════════════════════════╗
-║                           ⚽ PREMIER LEAGUE PREDICTOR PRO v3.1 ⚽                     ║
+║ ⚽ PREMIER LEAGUE PREDICTOR PRO v3.2 ⚽ ║
 ║                                                                      ║
-║                           v3.1 NEW:                                               ║
-║              ✅ Double Chance Markets (1X, X2, 12)                               ║
-║              ✅ DC Value Betting + Kelly Criterion                               ║
-║              ✅ Momentum Factor (Win/Loss Streaks)                               ║
-║              ✅ Exponential Decay Form Weighting                                 ║
-║              ✅ Score Clustering for Better Exact Score                          ║
-║              ✅ Smart DC Recommendation Engine                                   ║
-║                                                                      ║
-║           API: football-data.org v4 + The Odds API                              ║
-║                                                                      ║
-║           INTEGRATED FILES:                                                     ║
-║              - football_xgboost_model.pkl (pretrained XGBoost)                  ║
-║              - teams_master_map.json (name unification)                         ║
-║              - teams_elo_ratings.pkl (pre‑computed Elo ratings)                 ║
+║ MERGED: Full ML (58 features) + Streamlit UI + CLI                  ║
+║ ✅ All v3.1 features preserved                                       ║
+║ ✅ Streamlit interface added                                         ║
+║ ✅ Optional external model loading                                   ║
+║ ✅ F-string bugs fixed                                               ║
 ╚══════════════════════════════════════════════════════════════════════╝
 """
 
@@ -33,19 +24,25 @@ from collections import defaultdict
 from typing import Dict, List, Optional, Tuple
 from pathlib import Path
 
-# استيراد Streamlit (سيكون متاحاً فقط عند تشغيل التطبيق عبر streamlit)
+# ══════════════════════════════════════════════════════════════
+# ENVIRONMENT DETECTION
+# ══════════════════════════════════════════════════════════════
 try:
     import streamlit as st
     STREAMLIT_AVAILABLE = True
 except ImportError:
     STREAMLIT_AVAILABLE = False
 
-# محاولة استيراد مكتبات ML (لن نحتاجها الآن، لكن نبقيها تحسباً)
 ML_AVAILABLE = False
 XGBOOST_AVAILABLE = False
+
 try:
     import numpy as np
-    from sklearn.ensemble import RandomForestClassifier, GradientBoostingClassifier, StackingClassifier
+    from sklearn.ensemble import (
+        RandomForestClassifier,
+        GradientBoostingClassifier,
+        StackingClassifier
+    )
     from sklearn.linear_model import LogisticRegression
     from sklearn.model_selection import cross_val_score
     from sklearn.preprocessing import StandardScaler
@@ -64,13 +61,11 @@ except ImportError:
 # ══════════════════════════════════════════════════════════════
 # CONFIG
 # ══════════════════════════════════════════════════════════════
-FOOTBALL_DATA_KEY = "xxxxx"
+FOOTBALL_DATA_KEY = os.environ.get("FOOTBALL_DATA_KEY", "")
 FOOTBALL_DATA_URL = "https://api.football-data.org/v4"
 PL = "PL"
-
-ODDS_API_KEY = "xxxxx"
+ODDS_API_KEY = os.environ.get("ODDS_API_KEY", "")
 ODDS_API_URL = "https://api.the-odds-api.com/v4/sports/soccer_epl/odds"
-
 WEIGHTS = {
     'dixon_coles': 0.25,
     'elo': 0.18,
@@ -81,15 +76,13 @@ WEIGHTS = {
     'draw_model': 0.10,
     'ml': 0.15,
 }
-
 ELO_INIT = 1500
 ELO_K = 32
 ELO_HOME = 65
 FORM_N = 8
 BACKTEST_SPLIT = 0.70
-CALIBRATION_FILE = "calibration_v31.pkl"
-
-# الملفات المدمجة الجديدة
+CALIBRATION_FILE = "calibration_v32.pkl"
+# Optional external files
 XGB_MODEL_FILE = "football_xgboost_model.pkl"
 TEAMS_MAP_FILE = "teams_master_map.json"
 ELO_RATINGS_FILE = "teams_elo_ratings.pkl"
@@ -107,7 +100,6 @@ RIVALRIES = {
     frozenset({'Wolves', 'Aston Villa'}): 'West Midlands Derby',
 }
 
-# ALIASES الأساسية
 ALIASES = {
     'manchester united': 'Man United',
     'manchester city': 'Man City',
@@ -130,6 +122,36 @@ ALIASES = {
 }
 
 # ══════════════════════════════════════════════════════════════
+# LOAD OPTIONAL EXTERNAL FILES
+# ══════════════════════════════════════════════════════════════
+TEAMS_MAP = {}
+ELO_RATINGS = {}
+
+
+def load_external_files():
+    """Load optional external data files"""
+    global TEAMS_MAP, ELO_RATINGS
+    if Path(TEAMS_MAP_FILE).exists():
+        try:
+            with open(TEAMS_MAP_FILE, 'r', encoding='utf-8') as f:
+                TEAMS_MAP = json.load(f)
+        except Exception:
+            pass
+    if Path(ELO_RATINGS_FILE).exists():
+        try:
+            with open(ELO_RATINGS_FILE, 'rb') as f:
+                raw_elo = pickle.load(f)
+            if isinstance(raw_elo, dict):
+                for key, val in raw_elo.items():
+                    if isinstance(key, str) and isinstance(val, (int, float)):
+                        ELO_RATINGS[key] = val
+        except Exception:
+            pass
+
+
+load_external_files()
+
+# ══════════════════════════════════════════════════════════════
 # UTILITIES
 # ══════════════════════════════════════════════════════════════
 def poisson_pmf(k, mu):
@@ -149,9 +171,7 @@ def norm_name(n):
     for k, v in ALIASES.items():
         if k in lo or lo in k:
             return v
-    # أيضاً نبحث في TEAMS_MAP
-    global TEAMS_MAP
-    if 'TEAMS_MAP' in globals():
+    if TEAMS_MAP:
         for k, v in TEAMS_MAP.items():
             if lo in k.lower() or k.lower() in lo:
                 return v
@@ -169,11 +189,10 @@ def parse_date(s):
         c = s.replace('Z', '')
         fmt = '%Y-%m-%dT%H:%M:%S' if 'T' in c else '%Y-%m-%d %H:%M:%S'
         return datetime.strptime(c[:19], fmt)
-    except:
+    except Exception:
         return None
 
 
-# كلاس الألوان (تم نقله إلى الأعلى ليصبح متاحاً للجميع)
 class C:
     H = '\033[95m'
     B = '\033[94m'
@@ -263,41 +282,15 @@ def box(t):
 
 
 # ══════════════════════════════════════════════════════════════
-# تحميل الملفات الإضافية (بعد تعريف C)
-# ══════════════════════════════════════════════════════════════
-TEAMS_MAP = {}
-if Path(TEAMS_MAP_FILE).exists():
-    try:
-        with open(TEAMS_MAP_FILE, 'r', encoding='utf-8') as f:
-            TEAMS_MAP = json.load(f)
-        print(C.green("✓ Loaded teams map"))
-    except Exception as e:
-        print(C.red(f"✖ Failed to load teams map: {e}"))
-
-ELO_RATINGS = {}
-if Path(ELO_RATINGS_FILE).exists():
-    try:
-        with open(ELO_RATINGS_FILE, 'rb') as f:
-            raw_elo = pickle.load(f)
-            # محاولة استخراج أسماء الفرق من المفاتيح المعقدة
-            for key, val in raw_elo.items():
-                if isinstance(key, str):
-                    parts = key.split()
-                    if parts:
-                        team_name = parts[-1]  # أبسط تخمين
-                        ELO_RATINGS[team_name] = val
-        print(C.green("✓ Loaded Elo ratings"))
-    except Exception as e:
-        print(C.red(f"✖ Failed to load Elo ratings: {e}"))
-
-
-# ══════════════════════════════════════════════════════════════
-# API CLIENTS
+# API CLIENTS (unchanged from File 1)
 # ══════════════════════════════════════════════════════════════
 class FootballAPI:
     def __init__(self, token):
         self.s = requests.Session()
-        self.s.headers.update({'X-Auth-Token': token, 'Accept': 'application/json'})
+        self.s.headers.update({
+            'X-Auth-Token': token,
+            'Accept': 'application/json'
+        })
         self._c = {}
         self._t = 0
 
@@ -309,17 +302,21 @@ class FootballAPI:
 
     def _get(self, ep, p=None, cache=True):
         p = p or {}
-        k = hashlib.md5(f"{ep}|{json.dumps(p, sort_keys=True)}".encode()).hexdigest()
+        k = hashlib.md5(
+            f"{ep}|{json.dumps(p, sort_keys=True)}".encode()
+        ).hexdigest()
         if cache and k in self._c:
             return self._c[k]
         try:
             self._rl()
-            r = self.s.get(f"{FOOTBALL_DATA_URL}/{ep}", params=p, timeout=30)
+            r = self.s.get(
+                f"{FOOTBALL_DATA_URL}/{ep}", params=p, timeout=30
+            )
             if r.status_code == 429:
-                time.sleep(int(r.headers.get('X-RequestCounter-Reset', 60)) + 1)
+                wait = int(r.headers.get('X-RequestCounter-Reset', 60)) + 1
+                time.sleep(wait)
                 return self._get(ep, p, cache)
             if r.status_code in (401, 403):
-                print(C.red(" ✖ Invalid API key"))
                 return None
             if r.status_code == 404:
                 return None
@@ -328,7 +325,7 @@ class FootballAPI:
             if cache:
                 self._c[k] = d
             return d
-        except:
+        except Exception:
             return None
 
     def season_year(self):
@@ -336,13 +333,15 @@ class FootballAPI:
         if d and d.get('currentSeason'):
             try:
                 return int(d['currentSeason']['startDate'][:4])
-            except:
+            except Exception:
                 pass
         return None
 
     def matchday(self):
         d = self._get(f"competitions/{PL}")
-        return d['currentSeason'].get('currentMatchday', 1) if d and d.get('currentSeason') else 1
+        if d and d.get('currentSeason'):
+            return d['currentSeason'].get('currentMatchday', 1)
+        return 1
 
     def finished(self, season=None):
         p = {'status': 'FINISHED'}
@@ -387,7 +386,7 @@ class OddsAPI:
         self.cache = {}
 
     def ok(self):
-        return bool(self.key) and self.key != "ضع_مفتاح_odds_api_هنا"
+        return bool(self.key) and len(self.key) > 10
 
     def fetch(self):
         if not self.ok():
@@ -412,11 +411,7 @@ class OddsAPI:
                 bms = ev.get('bookmakers', [])
                 if not bms:
                     continue
-                ah = []
-                ad = []
-                aa = []
-                ao = []
-                au = []
+                ah, ad, aa, ao, au = [], [], [], [], []
                 for bm in bms:
                     for mk in bm.get('markets', []):
                         if mk['key'] == 'h2h':
@@ -437,46 +432,50 @@ class OddsAPI:
                     avh = sum(ah) / len(ah)
                     avd = sum(ad) / len(ad)
                     ava = sum(aa) / len(aa)
+                    ih = 1 / avh
+                    id_ = 1 / avd
+                    ia = 1 / ava
                     result[f"{h}_vs_{a}".lower()] = {
                         'home_team': h,
                         'away_team': a,
                         'odds_home': round(avh, 2),
                         'odds_draw': round(avd, 2),
                         'odds_away': round(ava, 2),
-                        'implied_home': round(1 / avh, 4),
-                        'implied_draw': round(1 / avd, 4),
-                        'implied_away': round(1 / ava, 4),
-                        'implied_1x': round(1 / avh + 1 / avd, 4),
-                        'implied_x2': round(1 / ava + 1 / avd, 4),
-                        'implied_12': round(1 / avh + 1 / ava, 4),
-                        'odds_1x': round(1 / (1 / avh + 1 / avd - 0.05), 2) if (1 / avh + 1 / avd) > 0.05 else None,
-                        'odds_x2': round(1 / (1 / ava + 1 / avd - 0.05), 2) if (1 / ava + 1 / avd) > 0.05 else None,
-                        'odds_12': round(1 / (1 / avh + 1 / ava - 0.05), 2) if (1 / avh + 1 / ava) > 0.05 else None,
+                        'implied_home': round(ih, 4),
+                        'implied_draw': round(id_, 4),
+                        'implied_away': round(ia, 4),
+                        'implied_1x': round(ih + id_, 4),
+                        'implied_x2': round(ia + id_, 4),
+                        'implied_12': round(ih + ia, 4),
+                        'odds_1x': round(1 / (ih + id_ - 0.05), 2) if (ih + id_) > 0.05 else None,
+                        'odds_x2': round(1 / (ia + id_ - 0.05), 2) if (ia + id_) > 0.05 else None,
+                        'odds_12': round(1 / (ih + ia - 0.05), 2) if (ih + ia) > 0.05 else None,
                         'odds_over25': round(sum(ao) / len(ao), 2) if ao else None,
                         'num_bm': len(bms)
                     }
             self.cache = result
             return result
-        except:
+        except Exception:
             return {}
 
     def find(self, hn, an):
         if not self.cache:
             self.fetch()
-        hl = hn.lower()
-        al = an.lower()
+        hl, al = hn.lower(), an.lower()
         for k, d in self.cache.items():
             oh = d['home_team'].lower()
             oa = d['away_team'].lower()
-            hm = hl in oh or oh in hl or any(w in oh for w in hl.split() if len(w) > 3)
-            am = al in oa or oa in al or any(w in oa for w in al.split() if len(w) > 3)
+            hm = (hl in oh or oh in hl or
+                  any(w in oh for w in hl.split() if len(w) > 3))
+            am = (al in oa or oa in al or
+                  any(w in oa for w in al.split() if len(w) > 3))
             if hm and am:
                 return d
         return None
 
 
 # ══════════════════════════════════════════════════════════════
-# TEAM
+# TEAM (preserved from File 1 with ELO_RATINGS support)
 # ══════════════════════════════════════════════════════════════
 class Team:
     def __init__(self, tid, name):
@@ -501,8 +500,7 @@ class Team:
         self.a_gf = 0
         self.a_ga = 0
         self.results = []
-        # استخدام التقييم المحفوظ إذا وجد
-        global ELO_RATINGS
+        # Use saved Elo if available, otherwise default
         self.elo = ELO_RATINGS.get(name, ELO_INIT)
         self.elo_hist = [self.elo]
         self.match_dates = []
@@ -510,6 +508,7 @@ class Team:
         self.fts = 0
         self._last_draw = False
         self.consec_draws = 0
+        # v3.1: Momentum
         self.win_streak = 0
         self.loss_streak = 0
         self.unbeaten = 0
@@ -580,6 +579,7 @@ class Team:
 
     @property
     def form_score(self):
+        """v3.1: Exponential decay weighting"""
         rec = self.results[-FORM_N:]
         if not rec:
             return 50.0
@@ -643,6 +643,7 @@ class Team:
 
     @property
     def momentum(self):
+        """v3.1: Momentum score -100 to +100"""
         if self.win_streak >= 5:
             return 90
         if self.win_streak >= 3:
@@ -682,7 +683,7 @@ class Team:
 
 
 # ══════════════════════════════════════════════════════════════
-# ELO SYSTEM
+# ELO SYSTEM (unchanged from File 1)
 # ══════════════════════════════════════════════════════════════
 class EloSystem:
     def __init__(self):
@@ -731,7 +732,7 @@ class EloSystem:
 
 
 # ══════════════════════════════════════════════════════════════
-# DIXON-COLES + DRAW PREDICTOR + FATIGUE
+# DIXON-COLES + DRAW PREDICTOR + FATIGUE (unchanged)
 # ══════════════════════════════════════════════════════════════
 class DixonColes:
     @staticmethod
@@ -806,14 +807,11 @@ class DrawPredictor:
         bd = min(0.42, 0.25 + boost)
         rem = 1.0 - bd
         if elo_d > 0:
-            hp = rem * 0.58
-            ap = rem * 0.42
+            hp, ap = rem * 0.58, rem * 0.42
         elif elo_d < 0:
-            hp = rem * 0.42
-            ap = rem * 0.58
+            hp, ap = rem * 0.42, rem * 0.58
         else:
-            hp = rem * 0.50
-            ap = rem * 0.50
+            hp, ap = rem * 0.50, rem * 0.50
         return (hp, bd, ap)
 
 
@@ -824,7 +822,10 @@ class Fatigue:
         rd = t.days_rest(ref)
         m14 = t.matches_in(14, ref)
         m30 = t.matches_in(30, ref)
-        rs = {0: 40, 1: 40, 2: 40, 3: 30, 4: 20, 5: 10}.get(rd, 0 if rd <= 7 else -5)
+        rs = {
+            0: 40, 1: 40, 2: 40,
+            3: 30, 4: 20, 5: 10
+        }.get(rd, 0 if rd <= 7 else -5)
         d14 = 35 if m14 >= 5 else (25 if m14 >= 4 else (15 if m14 >= 3 else 0))
         d30 = 25 if m30 >= 9 else (15 if m30 >= 7 else 0)
         return max(0, min(100, rs + d14 + d30))
@@ -850,7 +851,7 @@ class Fatigue:
 
 
 # ══════════════════════════════════════════════════════════════
-# CALIBRATOR
+# CALIBRATOR (unchanged)
 # ══════════════════════════════════════════════════════════════
 class Calibrator:
     def __init__(self):
@@ -867,13 +868,17 @@ class Calibrator:
         try:
             for idx, out in enumerate(['HOME', 'DRAW', 'AWAY']):
                 ps = np.array([h['probs'][idx] for h in self.hist])
-                ac = np.array([1 if h['actual'] == out else 0 for h in self.hist])
-                iso = IsotonicRegression(y_min=0.01, y_max=0.99, out_of_bounds='clip')
+                ac = np.array([
+                    1 if h['actual'] == out else 0 for h in self.hist
+                ])
+                iso = IsotonicRegression(
+                    y_min=0.01, y_max=0.99, out_of_bounds='clip'
+                )
                 iso.fit(ps, ac)
                 self.models[out] = iso
             self.ok = True
             return True
-        except:
+        except Exception:
             return False
 
     def adjust(self, probs):
@@ -883,19 +888,25 @@ class Calibrator:
             adj = []
             for i, out in enumerate(['HOME', 'DRAW', 'AWAY']):
                 if out in self.models:
-                    adj.append(float(self.models[out].predict([probs[i]])[0]))
+                    adj.append(
+                        float(self.models[out].predict([probs[i]])[0])
+                    )
                 else:
                     adj.append(probs[i])
             t = sum(adj)
             return tuple(p / t for p in adj) if t > 0 else probs
-        except:
+        except Exception:
             return probs
 
     def save(self, fn=CALIBRATION_FILE):
         try:
             with open(fn, 'wb') as f:
-                pickle.dump({'hist': self.hist, 'ok': self.ok, 'models': self.models}, f)
-        except:
+                pickle.dump({
+                    'hist': self.hist,
+                    'ok': self.ok,
+                    'models': self.models
+                }, f)
+        except Exception:
             pass
 
     def load(self, fn=CALIBRATION_FILE):
@@ -907,13 +918,13 @@ class Calibrator:
                 self.ok = d.get('ok', False)
                 self.models = d.get('models', {})
                 return True
-        except:
+        except Exception:
             pass
         return False
 
 
 # ══════════════════════════════════════════════════════════════
-# DATA PROCESSOR
+# DATA PROCESSOR (unchanged from File 1)
 # ══════════════════════════════════════════════════════════════
 class DataProc:
     def __init__(self):
@@ -939,12 +950,10 @@ class DataProc:
                 self.teams[aid] = Team(aid, an)
             h = self.teams[hid]
             a = self.teams[aid]
-
             md = parse_date(ds)
             if md:
                 h.match_dates.append(md)
                 a.match_dates.append(md)
-
             if do_elo:
                 self.elo.update(h, a, hg, ag)
 
@@ -954,7 +963,6 @@ class DataProc:
             h.ga += ag
             a.gf += ag
             a.ga += hg
-
             h.h_p += 1
             h.h_gf += hg
             h.h_ga += ag
@@ -1015,8 +1023,8 @@ class DataProc:
                 a.unbeaten += 1
 
             if draw:
-                h.consec_draws = h.consec_draws + 1 if h._last_draw else 1
-                a.consec_draws = a.consec_draws + 1 if a._last_draw else 1
+                h.consec_draws = (h.consec_draws + 1 if h._last_draw else 1)
+                a.consec_draws = (a.consec_draws + 1 if a._last_draw else 1)
             else:
                 h.consec_draws = 0
                 a.consec_draws = 0
@@ -1031,7 +1039,6 @@ class DataProc:
                 'away_goals': ag,
                 'date': ds
             })
-
             self.fixes.append({
                 'home_id': hid,
                 'away_id': aid,
@@ -1077,63 +1084,242 @@ class DataProc:
 
     def _rank(self):
         for i, t in enumerate(
-            sorted(self.teams.values(), key=lambda t: (t.pts, t.gd, t.gf), reverse=True), 1
+            sorted(
+                self.teams.values(),
+                key=lambda t: (t.pts, t.gd, t.gf),
+                reverse=True
+            ),
+            1
         ):
             t.pos = i
 
 
 # ══════════════════════════════════════════════════════════════
-# ML v3.1 (باستخدام النموذج المحمل مسبقاً)
+# ML v3.2 - FULL 58 FEATURES (restored from File 1)
+# + optional external model loading
 # ══════════════════════════════════════════════════════════════
 class MLPred:
     def __init__(self):
         self.model = None
+        self.scaler = StandardScaler() if ML_AVAILABLE else None
         self.trained = False
         self.acc = 0.0
-        self._load_model()
+        self.fnames = []
+        self._top = []
+        self._external = False
 
-    def _load_model(self):
-        """تحميل نموذج XGBoost المُدرَّب مسبقاً"""
+    def _try_load_external(self):
+        """Try to load pre-trained model (optional)"""
         if Path(XGB_MODEL_FILE).exists():
             try:
                 with open(XGB_MODEL_FILE, 'rb') as f:
-                    self.model = pickle.load(f)
-                self.trained = True
-                # قراءة معلومات النموذج (اختياري)
-                if hasattr(self.model, 'n_classes_'):
-                    print(C.green(f"✓ Loaded XGBoost model (classes: {self.model.n_classes_})"))
-                else:
-                    print(C.green("✓ Loaded XGBoost model"))
-            except Exception as e:
-                print(C.red(f"✖ Failed to load XGBoost model: {e}"))
-        else:
-            print(C.yellow("⚠ XGBoost model file not found, ML disabled"))
+                    loaded = pickle.load(f)
+                # Validate: check if model expects 3 or 58 features
+                if hasattr(loaded, 'n_features_in_'):
+                    n_feat = loaded.n_features_in_
+                    if n_feat == 3:
+                        # External model with 3 features - DON'T use it
+                        # Train our own with 58 features instead
+                        return False
+                    elif n_feat == 58:
+                        # Compatible external model
+                        self.model = loaded
+                        self.trained = True
+                        self._external = True
+                        return True
+                return False
+            except Exception:
+                return False
+        return False
 
     def feats(self, h, a, data, md=None, derby=False):
-        """إرجاع الميزات الثلاث التي يتوقعها النموذج"""
-        return [h.elo, a.elo, h.elo - a.elo]
+        """FULL 58 features - restored from File 1"""
+        ah = max(data.avg_h, 0.5)
+        aa = max(data.avg_a, 0.5)
+        return [
+            # Elo (3)
+            h.elo, a.elo, h.elo - a.elo,
+            # Form scores (4)
+            h.form_score, a.form_score, h.form_score - a.form_score,
+            abs(h.form_score - a.form_score),
+            # Goal averages (6)
+            h.h_avg_gf, a.a_avg_gf,
+            h.goal_form, a.goal_form,
+            h.goal_form - a.goal_form,
+            h.h_avg_gf - a.a_avg_gf,
+            # Defense (6)
+            h.h_avg_ga, a.a_avg_ga,
+            h.defense_form, a.defense_form,
+            h.defense_form - a.defense_form,
+            h.h_avg_ga - a.a_avg_ga,
+            # Attack/Defense ratios (4)
+            safe_div(h.h_avg_gf, ah, 1),
+            safe_div(a.a_avg_gf, aa, 1),
+            safe_div(h.h_avg_ga, ah, 1),
+            safe_div(a.a_avg_ga, aa, 1),
+            # Win rates (4)
+            h.h_wr, a.a_wr,
+            h.wr, a.wr,
+            # League position (7)
+            h.pos, a.pos, a.pos - h.pos,
+            h.pts, a.pts,
+            h.ppg - a.ppg,
+            h.gd,
+            # GD away (1)
+            a.gd,
+            # Clean sheets (4)
+            h.cs_r, a.cs_r,
+            h.fts_r, a.fts_r,
+            # Fatigue (2)
+            Fatigue.score(h, md), Fatigue.score(a, md),
+            # Draw rates (7)
+            h.dr, a.dr, (h.dr + a.dr) / 2,
+            h.draw_form, a.draw_form,
+            h.h_dr, a.a_dr,
+            # Volatility (2)
+            h.volatility, a.volatility,
+            # Derby (1)
+            1.0 if derby else 0.0,
+            # Elo scaled (1)
+            abs(h.elo - a.elo) / 100,
+            # v3.1: Momentum (7)
+            h.momentum / 100, a.momentum / 100,
+            (h.momentum - a.momentum) / 100,
+            h.win_streak, a.win_streak,
+            h.loss_streak, a.loss_streak,
+        ]
+
+    def train(self, data, fixes=None):
+        """FULL training pipeline - restored from File 1"""
+        if not ML_AVAILABLE:
+            return False
+        # Try external model first
+        if self._try_load_external():
+            return True
+        fixes = fixes or data.fixes
+        if len(fixes) < 40:
+            return False
+        X = []
+        y = []
+        sim = DataProc()
+        sf = sorted(fixes, key=lambda f: f.get('date', ''))
+        warm = int(len(sf) * 0.3)
+        for idx, f in enumerate(sf):
+            if idx >= warm:
+                ht = sim.teams.get(f['home_id'])
+                at = sim.teams.get(f['away_id'])
+                if ht and at and ht.played >= 3 and at.played >= 3:
+                    try:
+                        md = parse_date(f.get('date', ''))
+                        derby = bool(is_derby(
+                            f['home_name'], f['away_name']
+                        ))
+                        ft = self.feats(ht, at, sim, md, derby)
+                        lb = (
+                            0 if f['home_goals'] > f['away_goals'] else
+                            (1 if f['home_goals'] == f['away_goals'] else 2)
+                        )
+                        X.append(ft)
+                        y.append(lb)
+                    except Exception:
+                        pass
+            # Simulate match
+            fake = {
+                'status': 'FINISHED',
+                'homeTeam': {
+                    'id': f['home_id'],
+                    'shortName': f['home_name']
+                },
+                'awayTeam': {
+                    'id': f['away_id'],
+                    'shortName': f['away_name']
+                },
+                'score': {
+                    'fullTime': {
+                        'home': f['home_goals'],
+                        'away': f['away_goals']
+                    }
+                },
+                'utcDate': f.get('date', '')
+            }
+            sim.process([fake], do_elo=True)
+        if len(X) < 30:
+            return False
+        X = np.nan_to_num(np.array(X, dtype=np.float64))
+        y = np.array(y)
+        Xs = self.scaler.fit_transform(X)
+        # Build ensemble
+        ests = [
+            ('rf', RandomForestClassifier(
+                n_estimators=200,
+                max_depth=8,
+                min_samples_split=5,
+                min_samples_leaf=3,
+                random_state=42
+            )),
+            ('gb', GradientBoostingClassifier(
+                n_estimators=150,
+                max_depth=5,
+                learning_rate=0.1,
+                random_state=42
+            ))
+        ]
+        if XGBOOST_AVAILABLE:
+            ests.append(('xgb', XGBClassifier(
+                n_estimators=200,
+                max_depth=6,
+                learning_rate=0.08,
+                subsample=0.8,
+                colsample_bytree=0.8,
+                random_state=42,
+                use_label_encoder=False,
+                eval_metric='mlogloss',
+                verbosity=0
+            )))
+        cv = min(5, max(2, len(y) // 15))
+        try:
+            st_model = StackingClassifier(
+                estimators=ests,
+                final_estimator=LogisticRegression(
+                    max_iter=1000, C=1.0
+                ),
+                cv=cv,
+                n_jobs=-1
+            )
+            sc = cross_val_score(
+                st_model, Xs, y, cv=cv, scoring='accuracy'
+            )
+            self.acc = sc.mean()
+            self.model = CalibratedClassifierCV(
+                st_model, cv=min(3, cv)
+            )
+            self.model.fit(Xs, y)
+        except Exception:
+            rf = ests[0][1]
+            rf.fit(Xs, y)
+            self.model = rf
+            self.acc = 0
+        self.trained = True
+        return True
 
     def predict(self, h, a, data, md=None, derby=False):
-        if not self.trained or self.model is None:
+        if not self.trained or not self.model:
             return None
         try:
             ft = self.feats(h, a, data, md, derby)
-            # تحويل إلى مصفوفة ثنائية الأبعاد
-            X = np.array([ft], dtype=np.float64)
-            # النموذج قد يتوقع مصفوفة ثنائية الأبعاد
-            p = self.model.predict_proba(X)[0]
-            # التأكد من أن المخرجات ثلاثية
-            if len(p) == 3:
-                return (float(p[0]), float(p[1]), float(p[2]))
+            X = np.nan_to_num(np.array([ft], dtype=np.float64))
+            if self.scaler and not self._external:
+                Xs = self.scaler.transform(X)
             else:
-                return None
-        except Exception as e:
-            print(C.red(f"ML prediction error: {e}"))
+                Xs = X
+            p = self.model.predict_proba(Xs)[0]
+            return (float(p[0]), float(p[1]), float(p[2]))
+        except Exception:
             return None
 
 
 # ══════════════════════════════════════════════════════════════
-# PREDICTION RESULT (v3.1 with Double Chance)
+# PREDICTION RESULT (unchanged)
 # ══════════════════════════════════════════════════════════════
 class Pred:
     def __init__(self):
@@ -1186,7 +1372,7 @@ class Pred:
 
 
 # ══════════════════════════════════════════════════════════════
-# PREDICTION ENGINE v3.1
+# PREDICTION ENGINE v3.2 (unchanged logic from File 1)
 # ══════════════════════════════════════════════════════════════
 class Engine:
     def __init__(self, data, ml=None, odds=None, cal=None):
@@ -1219,28 +1405,24 @@ class Engine:
         p.a_pos = a.pos
         p.h_elo = h.elo
         p.a_elo = a.elo
-
         if md is None and date:
             md = parse_date(date)
         md = md or datetime.now()
-
-        derby = bool(is_derby(h.name, a.name))
-        p.is_derby = derby
-        p.derby_name = is_derby(h.name, a.name) or ""
-
+        derby = is_derby(h.name, a.name)
+        p.is_derby = bool(derby)
+        p.derby_name = derby or ""
         p.h_fat = Fatigue.score(h, md)
         p.a_fat = Fatigue.score(a, md)
         p.h_rest = h.days_rest(md)
         p.a_rest = a.days_rest(md)
         p.h_momentum = h.momentum
         p.a_momentum = a.momentum
-
         # xG
         p.hxg = self._xg(h, a, True)
         p.axg = self._xg(a, h, False)
         p.hxg *= Fatigue.impact(h, md)
         p.axg *= Fatigue.impact(a, md)
-
+        # Momentum adjusts xG
         if h.momentum > 40:
             p.hxg *= 1.05
         elif h.momentum < -40:
@@ -1249,7 +1431,6 @@ class Engine:
             p.axg *= 1.05
         elif a.momentum < -40:
             p.axg *= 0.95
-
         # Models
         models = {}
         models['dixon_coles'] = DixonColes.predict(p.hxg, p.axg)
@@ -1259,7 +1440,9 @@ class Engine:
         models['home_advantage'] = self._hadv(h, a)
         models['fatigue'] = Fatigue.predict(h, a, md)
         ed = h.elo + ELO_HOME - a.elo
-        models['draw_model'] = DrawPredictor.predict(h, a, p.is_derby, ed)
+        models['draw_model'] = DrawPredictor.predict(
+            h, a, p.is_derby, ed
+        )
         if self.ml and self.ml.trained:
             mp = self.ml.predict(h, a, self.data, md, p.is_derby)
             if mp:
@@ -1267,7 +1450,6 @@ class Engine:
                 p.ml_used = True
                 p.ml_acc = self.ml.acc
         p.models = models
-
         # Ensemble
         hp = dp = ap = 0.0
         tw = 0.0
@@ -1290,44 +1472,45 @@ class Engine:
         p.raw_hp = hp
         p.raw_dp = dp
         p.raw_ap = ap
-
         if self.cal and self.cal.ok:
             hp, dp, ap = self.cal.adjust((hp, dp, ap))
             p.calibrated = True
         p.hp = hp
         p.dp = dp
         p.ap = ap
-
         # Double Chance
         p.dc_1x = hp + dp
         p.dc_x2 = ap + dp
         p.dc_12 = hp + ap
-
         p.dc_recommend = self._dc_recommend(p)
-
+        # Score matrix
         mx = DixonColes.matrix(p.hxg, p.axg)
         ss = sorted(mx.items(), key=lambda x: x[1], reverse=True)
         p.top_sc = [(s[0][0], s[0][1], s[1]) for s in ss[:6]]
-
-        p.btts = sum(pr for (hh, aa), pr in mx.items() if hh > 0 and aa > 0)
-        p.o15 = sum(pr for (hh, aa), pr in mx.items() if hh + aa > 1)
-        p.o25 = sum(pr for (hh, aa), pr in mx.items() if hh + aa > 2)
-        p.o35 = sum(pr for (hh, aa), pr in mx.items() if hh + aa > 3)
-
-        pd = {'HOME': hp, 'DRAW': dp, 'AWAY': ap}
-        p.result = max(pd, key=pd.get)
-        p.conf = max(pd.values()) * 100
-
+        p.btts = sum(
+            pr for (hh, aa), pr in mx.items() if hh > 0 and aa > 0
+        )
+        p.o15 = sum(
+            pr for (hh, aa), pr in mx.items() if hh + aa > 1
+        )
+        p.o25 = sum(
+            pr for (hh, aa), pr in mx.items() if hh + aa > 2
+        )
+        p.o35 = sum(
+            pr for (hh, aa), pr in mx.items() if hh + aa > 3
+        )
+        pd_map = {'HOME': hp, 'DRAW': dp, 'AWAY': ap}
+        p.result = max(pd_map, key=pd_map.get)
+        p.conf = max(pd_map.values()) * 100
         if p.top_sc:
             p.pred_sc = (p.top_sc[0][0], p.top_sc[0][1])
-
+        # Value betting
         if self.odds and self.odds.ok():
             od = self.odds.find(h.name, a.name)
             if od:
                 p.odds = od
                 p.value_bets = self._value(p, od)
                 p.dc_value_bets = self._dc_value(p, od)
-
         return p
 
     def _dc_recommend(self, p):
@@ -1337,15 +1520,13 @@ class Engine:
         if 0.30 <= p.ap <= 0.50 and p.dp > 0.20:
             recs.append(('X2', p.dc_x2, 'Away has real chance + draw likely'))
         if p.dp < 0.20:
-            recs.append(('12', p.dc_12, 'Draw unlikely - one team will win'))
+            recs.append(('12', p.dc_12, 'Draw unlikely'))
         if p.is_derby and p.hp > p.ap:
             recs.append(('1X', p.dc_1x, f'{p.derby_name} - Home advantage'))
-
         if not recs:
             dc_vals = {'1X': p.dc_1x, 'X2': p.dc_x2, '12': p.dc_12}
             best = max(dc_vals, key=dc_vals.get)
             recs.append((best, dc_vals[best], 'Highest probability'))
-
         recs.sort(key=lambda x: -x[1])
         return f"{recs[0][0]} ({recs[0][1] * 100:.1f}%) - {recs[0][2]}"
 
@@ -1426,7 +1607,10 @@ class Engine:
             ('Away', p.ap, od['implied_away'], od['odds_away'])
         ]:
             edge = (mp - ip) * 100
-            kelly = (mp * odd - 1) / (odd - 1) if mp > 0 and odd > 1 else 0
+            kelly = (
+                (mp * odd - 1) / (odd - 1)
+                if mp > 0 and odd > 1 else 0
+            )
             vals.append({
                 'market': nm,
                 'model': float(mp * 100),
@@ -1465,7 +1649,7 @@ class Engine:
 
 
 # ══════════════════════════════════════════════════════════════
-# BACKTESTER v3.1
+# BACKTESTER v3.2 (unchanged logic)
 # ══════════════════════════════════════════════════════════════
 class Backtester:
     def __init__(self):
@@ -1480,12 +1664,14 @@ class Backtester:
         test = fin[si:]
         if len(train) < 30 or len(test) < 10:
             return {'error': 'Not enough data'}
-
         td = DataProc()
         td.process(train)
-        ml = MLPred()  # سيحمل النموذج المحفوظ
+        # ✅ FIXED: Train ML properly with 58 features
+        ml = None
+        if ML_AVAILABLE:
+            ml = MLPred()
+            ml.train(td)
         eng = Engine(td, ml)
-
         cs = len(test) // 2
         cal_set = test[:cs]
         eval_set = test[cs:]
@@ -1506,23 +1692,23 @@ class Backtester:
                 continue
             ahg = int(ahg)
             aag = int(aag)
-            actual = 'HOME' if ahg > aag else ('AWAY' if ahg < aag else 'DRAW')
+            actual = (
+                'HOME' if ahg > aag else
+                ('AWAY' if ahg < aag else 'DRAW')
+            )
             self.cal.add((pr.hp, pr.dp, pr.ap), actual)
             t1 += 1
             if pr.result == actual:
                 cr1 += 1
             td.process([m])
-
         cal_ok = self.cal.calibrate()
         eng2 = Engine(td, ml, cal=self.cal) if cal_ok else eng
-
         cr = cr1
         csc = 0
         total = t1
         preds = []
         dc_correct = {'1X': 0, 'X2': 0, '12': 0}
         dc_total = {'1X': 0, 'X2': 0, '12': 0}
-
         for m in eval_set:
             ht = m.get('homeTeam', {})
             at = m.get('awayTeam', {})
@@ -1540,13 +1726,15 @@ class Backtester:
                 continue
             ahg = int(ahg)
             aag = int(aag)
-            actual = 'HOME' if ahg > aag else ('AWAY' if ahg < aag else 'DRAW')
+            actual = (
+                'HOME' if ahg > aag else
+                ('AWAY' if ahg < aag else 'DRAW')
+            )
             total += 1
             if pr.result == actual:
                 cr += 1
             if pr.pred_sc[0] == ahg and pr.pred_sc[1] == aag:
                 csc += 1
-
             for dc_name, dc_covers in [
                 ('1X', ['HOME', 'DRAW']),
                 ('X2', ['AWAY', 'DRAW']),
@@ -1555,7 +1743,6 @@ class Backtester:
                 dc_total[dc_name] += 1
                 if actual in dc_covers:
                     dc_correct[dc_name] += 1
-
             preds.append({
                 'home': hn,
                 'away': an,
@@ -1572,10 +1759,8 @@ class Backtester:
                 'calibrated': pr.calibrated
             })
             td.process([m])
-
         if total == 0:
             return {'error': 'No matches'}
-
         ra = cr / total * 100
         sa = csc / total * 100
         brier = 0.0
@@ -1585,11 +1770,9 @@ class Backtester:
             for i in range(3):
                 brier += (p['probs'][i] - av[i]) ** 2
         brier /= (total * 3)
-
         hi = [p for p in preds if p['confidence'] > 55]
         me = [p for p in preds if 40 <= p['confidence'] <= 55]
         lo = [p for p in preds if p['confidence'] < 40]
-
         self.results = {
             'total': total,
             'train': len(train),
@@ -1600,17 +1783,35 @@ class Backtester:
             'correct': cr,
             'correct_sc': csc,
             'cal_used': cal_ok,
-            'hi_acc': sum(1 for p in hi if p['correct']) / len(hi) * 100 if hi else 0,
-            'me_acc': sum(1 for p in me if p['correct']) / len(me) * 100 if me else 0,
-            'lo_acc': sum(1 for p in lo if p['correct']) / len(lo) * 100 if lo else 0,
+            'hi_acc': (
+                sum(1 for p in hi if p['correct']) / len(hi) * 100
+                if hi else 0
+            ),
+            'me_acc': (
+                sum(1 for p in me if p['correct']) / len(me) * 100
+                if me else 0
+            ),
+            'lo_acc': (
+                sum(1 for p in lo if p['correct']) / len(lo) * 100
+                if lo else 0
+            ),
             'hi_n': len(hi),
             'me_n': len(me),
             'lo_n': len(lo),
             'predictions': preds,
-            'ml_acc': 0,  # ليس لدينا تدريب جديد
-            'dc_1x_acc': dc_correct['1X'] / dc_total['1X'] * 100 if dc_total['1X'] else 0,
-            'dc_x2_acc': dc_correct['X2'] / dc_total['X2'] * 100 if dc_total['X2'] else 0,
-            'dc_12_acc': dc_correct['12'] / dc_total['12'] * 100 if dc_total['12'] else 0,
+            'ml_acc': float(ml.acc * 100) if ml and ml.trained else 0,
+            'dc_1x_acc': (
+                dc_correct['1X'] / dc_total['1X'] * 100
+                if dc_total['1X'] else 0
+            ),
+            'dc_x2_acc': (
+                dc_correct['X2'] / dc_total['X2'] * 100
+                if dc_total['X2'] else 0
+            ),
+            'dc_12_acc': (
+                dc_correct['12'] / dc_total['12'] * 100
+                if dc_total['12'] else 0
+            ),
             'dc_1x_n': dc_total['1X'],
             'dc_x2_n': dc_total['X2'],
             'dc_12_n': dc_total['12'],
@@ -1619,18 +1820,17 @@ class Backtester:
 
 
 # ══════════════════════════════════════════════════════════════
-# DISPLAY v3.1 (يستخدم فقط في وضع CLI)
+# DISPLAY (CLI) - Fixed f-string bugs
 # ══════════════════════════════════════════════════════════════
 class Disp:
     @staticmethod
     def header():
         print()
-        print(C.cyan(" ╔══════════════════════════════════════════════════════════════════╗"))
-        print(C.cyan(" ║") + C.bold(" ⚽ PREMIER LEAGUE PREDICTOR PRO v3.1 ⚽ ") + C.cyan("║"))
+        print(C.cyan(" ╔══════════════════════════════════════════════════════════════╗"))
+        print(C.cyan(" ║") + C.bold(" ⚽ PREMIER LEAGUE PREDICTOR PRO v3.2 ⚽ ") + C.cyan("║"))
         print(C.cyan(" ║") + C.dim(" Dixon-Coles • Elo • XGBoost • Double Chance ") + C.cyan("║"))
-        print(C.cyan(" ║") + C.dim(" Momentum • Calibration • Value Betting ") + C.cyan("║"))
-        print(C.cyan(" ║") + C.dim(" Integrated: XGBoost model, teams map, Elo ratings ") + C.cyan("║"))
-        print(C.cyan(" ╚══════════════════════════════════════════════════════════════════╝"))
+        print(C.cyan(" ║") + C.dim(" Momentum • Calibration • Streamlit + CLI ") + C.cyan("║"))
+        print(C.cyan(" ╚══════════════════════════════════════════════════════════════╝"))
         print()
 
     @staticmethod
@@ -1657,19 +1857,38 @@ class Disp:
     def standings(teams):
         Disp.section("📊 Standings")
         print(
-            f" {C.bold('#'):>3} {'Team':<22} {'P':>3} {'W':>2} {'D':>2} {'L':>2} "
-            f"{'GF':>3} {'GA':>3} {'GD':>4} {C.bold('Pts'):>4} {'Elo':>6} Form"
+            f" {C.bold('#'):>3} {'Team':<22} {'P':>3} {'W':>2} "
+            f"{'D':>2} {'L':>2} {'GF':>3} {'GA':>3} {'GD':>4} "
+            f"{C.bold('Pts'):>4} {'Elo':>6} Form"
         )
         print(f" {'─' * 88}")
         for i, t in enumerate(
-            sorted(teams.values(), key=lambda t: (t.pts, t.gd, t.gf), reverse=True), 1
+            sorted(
+                teams.values(),
+                key=lambda t: (t.pts, t.gd, t.gf),
+                reverse=True
+            ),
+            1
         ):
-            pc = C.G if i <= 4 else (C.CN if i <= 6 else (C.R if i >= len(teams) - 2 else C.W))
-            ec = C.green if t.elo > 1520 else (C.red if t.elo < 1480 else C.yellow)
-            mi = "🔥" if t.momentum > 40 else ("📉" if t.momentum < -40 else "")
+            pc = (
+                C.G if i <= 4 else
+                (C.CN if i <= 6 else
+                 (C.R if i >= len(teams) - 2 else C.W))
+            )
+            ec = (
+                C.green if t.elo > 1520 else
+                (C.red if t.elo < 1480 else C.yellow)
+            )
+            mi = (
+                "🔥" if t.momentum > 40 else
+                ("📉" if t.momentum < -40 else "")
+            )
             print(
-                f" {pc}{i:>3}{C.E} {t.name:<22} {t.played:>3} {t.wins:>2} {t.draws:>2} {t.losses:>2} "
-                f"{t.gf:>3} {t.ga:>3} {t.gd:>+4} {C.bold(str(t.pts)):>4} {ec(f'{t.elo:.0f}'):>6} "
+                f" {pc}{i:>3}{C.E} {t.name:<22} {t.played:>3} "
+                f"{t.wins:>2} {t.draws:>2} {t.losses:>2} "
+                f"{t.gf:>3} {t.ga:>3} {t.gd:>+4} "
+                f"{C.bold(str(t.pts)):>4} "
+                f"{ec(f'{t.elo:.0f}'):>6} "
                 f"{C.form_str(t.form_string[-5:])} {mi}"
             )
 
@@ -1679,20 +1898,27 @@ class Disp:
         print(f"\n {C.blue('┌' + '─' * w + '┐')}")
         print(box(f" {C.bold(f'⚽ MATCH #{idx}')}"))
         if p.is_derby:
-            print(box(f" {C.magenta(C.bold(f'🔥 {p.derby_name}'))}"))
+            print(box(
+                f" {C.magenta(C.bold(f'🔥 {p.derby_name}'))}"
+            ))
         print(box(
-            f" {C.bold(C.green('🏠 ' + p.home))} {C.dim('vs')} {C.bold(C.red('✈️ ' + p.away))}"
+            f" {C.bold(C.green('🏠 ' + p.home))} {C.dim('vs')} "
+            f"{C.bold(C.red('✈️ ' + p.away))}"
         ))
         if p.date:
             dt = parse_date(p.date)
-            ds = dt.strftime('%a %d %b %Y • %H:%M') if dt else p.date[:16]
+            ds = (
+                dt.strftime('%a %d %b %Y • %H:%M')
+                if dt else p.date[:16]
+            )
             print(box(f" 📅 {ds}"))
         ed = p.h_elo - p.a_elo
         edc = C.green if ed > 0 else C.red
         print(box(
-            f" 🏆 Elo: {p.h_elo:.0f} vs {p.a_elo:.0f} ({edc(f'{ed:+.0f}')})"
+            f" 🏆 Elo: {p.h_elo:.0f} vs {p.a_elo:.0f} "
+            f"({edc(f'{ed:+.0f}')})"
         ))
-
+        # Momentum
         def mom_str(m, name):
             if m > 40:
                 return C.green(f"🔥 {name} on fire! ({m:+d})")
@@ -1703,51 +1929,66 @@ class Disp:
             if m < -20:
                 return C.red(f"⚠️ {name} poor form ({m:+d})")
             return C.dim(f"→ {name} neutral ({m:+d})")
-
         if p.h_momentum != 0 or p.a_momentum != 0:
             print(box(f" 💪 {mom_str(p.h_momentum, p.home)}"))
             print(box(f" 💪 {mom_str(p.a_momentum, p.away)}"))
-
         if p.calibrated:
             print(box(C.dim(" ✅ Calibrated")))
         print(f" {C.blue('├' + '─' * w + '┤')}")
-
+        # 1X2
         print(box(f" {C.bold('📊 1X2 PROBABILITIES')}"))
+        hp_pct = f"{p.hp * 100:5.1f}%"
+        dp_pct = f"{p.dp * 100:5.1f}%"
+        ap_pct = f"{p.ap * 100:5.1f}%"
         print(box(
-            f" 🏠 Home: {C.green(f'{p.hp * 100:5.1f}%')} {C.pct_bar(p.hp, 25, C.G)}"
+            f" 🏠 Home: {C.green(hp_pct)} "
+            f"{C.pct_bar(p.hp, 25, C.G)}"
         ))
         print(box(
-            f" 🤝 Draw: {C.yellow(f'{p.dp * 100:5.1f}%')} {C.pct_bar(p.dp, 25, C.Y)}"
+            f" 🤝 Draw: {C.yellow(dp_pct)} "
+            f"{C.pct_bar(p.dp, 25, C.Y)}"
         ))
         print(box(
-            f" ✈️ Away: {C.red(f'{p.ap * 100:5.1f}%')} {C.pct_bar(p.ap, 25, C.R)}"
+            f" ✈️ Away: {C.red(ap_pct)} "
+            f"{C.pct_bar(p.ap, 25, C.R)}"
         ))
         print(f" {C.blue('├' + '─' * w + '┤')}")
-
+        # DC
         print(box(f" {C.bold('🛡️ DOUBLE CHANCE')}"))
-
         def dc_bar(val, label, color):
-            emoji = "✅" if val > 0.70 else ("⚡" if val > 0.55 else "⚠️")
-            return f" {emoji} {label:<16} {color(f'{val * 100:5.1f}%')} {C.pct_bar(val, 20, color)}"
-
+            emoji = (
+                "✅" if val > 0.70 else
+                ("⚡" if val > 0.55 else "⚠️")
+            )
+            vstr = f"{val * 100:5.1f}%"
+            return (
+                f" {emoji} {label:<16} {color(vstr)} "
+                f"{C.pct_bar(val, 20, color)}"
+            )
         print(box(dc_bar(p.dc_1x, "1X (Home/Draw):", C.green)))
         print(box(dc_bar(p.dc_12, "12 (No Draw):", C.cyan)))
         print(box(dc_bar(p.dc_x2, "X2 (Away/Draw):", C.yellow)))
-        print(box(f" {C.bold('💡 Recommend:')} {C.bold(p.dc_recommend)}"))
-        print(f" {C.blue('├' + '─' * w + '┤')}")
-
         print(box(
-            f" {C.bold('⚡ xG:')} {p.home}: {C.bold(f'{p.hxg:.2f}')} {p.away}: {C.bold(f'{p.axg:.2f}')} "
-            f"Total: {C.bold(f'{p.hxg + p.axg:.2f}')}"
+            f" {C.bold('💡 Recommend:')} {C.bold(p.dc_recommend)}"
         ))
         print(f" {C.blue('├' + '─' * w + '┤')}")
-
+        # xG
+        total_xg = p.hxg + p.axg
+        print(box(
+            f" {C.bold('⚡ xG:')} {p.home}: "
+            f"{C.bold(f'{p.hxg:.2f}')} "
+            f"{p.away}: {C.bold(f'{p.axg:.2f}')} "
+            f"Total: {C.bold(f'{total_xg:.2f}')}"
+        ))
+        print(f" {C.blue('├' + '─' * w + '┤')}")
+        # Scores
         print(box(f" {C.bold('🎯 LIKELY SCORES')}"))
         for i, (hg, ag, pr) in enumerate(p.top_sc[:5]):
             mk = "👉" if i == 0 else " "
-            print(box(f" {mk} {hg}-{ag} ({pr * 100:4.1f}%) {C.dim('▓' * int(pr * 60))}"))
+            bar = C.dim('▓' * int(pr * 60))
+            print(box(f" {mk} {hg}-{ag} ({pr * 100:4.1f}%) {bar}"))
         print(f" {C.blue('├' + '─' * w + '┤')}")
-
+        # Markets
         print(box(f" {C.bold('📈 MARKETS')}"))
         for nm, v, th in [
             ("Over 1.5", p.o15, .5),
@@ -1758,62 +1999,94 @@ class Disp:
             e = C.green("✅") if v > th else C.red("❌")
             print(box(f" {nm:<20} {e} {v * 100:5.1f}%"))
         print(f" {C.blue('├' + '─' * w + '┤')}")
-
+        # Form & Fatigue
         print(box(f" {C.bold('📋 FORM & FATIGUE')}"))
-
         def fs(s, d):
             if s > 50:
                 return C.red(f"⚠️ {s:.0f} ({d}d)")
             if s > 25:
                 return C.yellow(f"😐 {s:.0f} ({d}d)")
             return C.green(f"✅ {s:.0f} ({d}d)")
-
-        print(box(f" {p.home:<18} {C.form_str(p.h_form)} {fs(p.h_fat, p.h_rest)}"))
-        print(box(f" {p.away:<18} {C.form_str(p.a_form)} {fs(p.a_fat, p.a_rest)}"))
+        print(box(
+            f" {p.home:<18} {C.form_str(p.h_form)} "
+            f"{fs(p.h_fat, p.h_rest)}"
+        ))
+        print(box(
+            f" {p.away:<18} {C.form_str(p.a_form)} "
+            f"{fs(p.a_fat, p.a_rest)}"
+        ))
         print(f" {C.blue('├' + '─' * w + '┤')}")
-
+        # Models
         print(box(f" {C.bold('🔬 MODELS')}"))
         for nm, (mh, md, ma) in p.models.items():
             wt = WEIGHTS.get(nm, 0)
             if wt > 0 or nm == 'ml':
+                h_str = C.green(f"{mh * 100:4.1f}%")
+                d_str = C.yellow(f"{md * 100:4.1f}%")
+                a_str = C.red(f"{ma * 100:4.1f}%")
                 print(box(
-                    f" {nm:<14} ({wt:>4.0%}): H={C.green(f'{mh * 100:4.1f}%')} "
-                    f"D={C.yellow(f'{md * 100:4.1f}%')} A={C.red(f'{ma * 100:4.1f}%')}"
+                    f" {nm:<14} ({wt:>4.0%}): "
+                    f"H={h_str} D={d_str} A={a_str}"
                 ))
-
-        has_v = p.value_bets and any(v['is_value'] for v in p.value_bets)
+        # ✅ FIXED: Value bets f-strings
+        has_v = (p.value_bets and any(v['is_value'] for v in p.value_bets))
         if has_v:
             print(f" {C.blue('├' + '─' * w + '┤')}")
             print(box(f" {C.bold('💰 1X2 VALUE BETS')}"))
             for v in p.value_bets:
                 if v['is_value']:
+                    edge_str = f"+{v['edge']:.1f}%"
                     print(box(
                         f" {v['market']:<8} @{v['odds']:.2f} "
-                        f"Edge:{C.green(f'+{v["edge"]:.1f}%')} Kelly:{v['kelly']:.1f}% "
+                        f"Edge:{C.green(edge_str)} "
+                        f"Kelly:{v['kelly']:.1f}% "
                         f"{C.value_ind(v['edge'])}"
                     ))
-
-        has_dcv = p.dc_value_bets and any(v['is_value'] for v in p.dc_value_bets)
+        has_dcv = (
+            p.dc_value_bets and
+            any(v['is_value'] for v in p.dc_value_bets)
+        )
         if has_dcv:
             print(f" {C.blue('├' + '─' * w + '┤')}")
             print(box(f" {C.bold('🛡️ DC VALUE BETS')}"))
             for v in p.dc_value_bets:
                 if v['is_value']:
+                    edge_str = f"+{v['edge']:.1f}%"
                     print(box(
                         f" {v['market']:<8} @{v['odds']:.2f} "
-                        f"Edge:{C.green(f'+{v["edge"]:.1f}%')} Kelly:{v['kelly']:.1f}% "
+                        f"Edge:{C.green(edge_str)} "
+                        f"Kelly:{v['kelly']:.1f}% "
                         f"{C.value_ind(v['edge'])}"
                     ))
-
+        # Final prediction
         print(f" {C.blue('├' + '─' * w + '┤')}")
-        rm = {'HOME': f"🏆 {p.home} Win", 'DRAW': "🤝 Draw", 'AWAY': f"🏆 {p.away} Win"}
+        rm = {
+            'HOME': f"🏆 {p.home} Win",
+            'DRAW': "🤝 Draw",
+            'AWAY': f"🏆 {p.away} Win"
+        }
         cc = C.conf_color(p.conf)
-        em = "🔥" if p.conf > 55 else ("⚡" if p.conf > 40 else "⚠️")
+        em = (
+            "🔥" if p.conf > 55 else
+            ("⚡" if p.conf > 40 else "⚠️")
+        )
         print(box(""))
-        print(box(f" 🎯 {C.bold('PREDICTION:')} {C.bold(rm.get(p.result, '?'))}"))
-        print(box(f" 📊 {C.bold('SCORE:')} {C.bold(f'{p.pred_sc[0]} - {p.pred_sc[1]}')}"))
-        print(box(f" {em} {C.bold('CONFIDENCE:')} {cc}{p.conf:.1f}%{C.E}"))
-        print(box(f" 🛡️ {C.bold('BEST DC:')} {C.bold(p.dc_recommend.split(' - ')[0])}"))
+        print(box(
+            f" 🎯 {C.bold('PREDICTION:')} "
+            f"{C.bold(rm.get(p.result, '?'))}"
+        ))
+        print(box(
+            f" 📊 {C.bold('SCORE:')} "
+            f"{C.bold(f'{p.pred_sc[0]} - {p.pred_sc[1]}')}"
+        ))
+        print(box(
+            f" {em} {C.bold('CONFIDENCE:')} "
+            f"{cc}{p.conf:.1f}%{C.E}"
+        ))
+        dc_short = p.dc_recommend.split(' - ')[0]
+        print(box(
+            f" 🛡️ {C.bold('BEST DC:')} {C.bold(dc_short)}"
+        ))
         print(box(""))
         print(f" {C.blue('└' + '─' * w + '┘')}")
 
@@ -1821,73 +2094,117 @@ class Disp:
     def summary(preds):
         Disp.section("📋 SUMMARY")
         print(
-            f" {'#':>2} {'Home':<16} {'Away':<16} {'Pred':<7} {'Sc':>4} {'Conf':>5} "
-            f"{'1X':>5} {'X2':>5} {'12':>5} {'DC Rec'}"
+            f" {'#':>2} {'Home':<16} {'Away':<16} {'Pred':<7} "
+            f"{'Sc':>4} {'Conf':>5} {'1X':>5} {'X2':>5} "
+            f"{'12':>5} {'DC Rec'}"
         )
         print(f" {'─' * 100}")
         for i, p in enumerate(preds, 1):
-            res = {'HOME': C.green('H'), 'DRAW': C.yellow('D'), 'AWAY': C.red('A')}.get(p.result, '?')
+            res = {
+                'HOME': C.green('H'),
+                'DRAW': C.yellow('D'),
+                'AWAY': C.red('A')
+            }.get(p.result, '?')
             cc = C.conf_color(p.conf)
             sc = f"{p.pred_sc[0]}-{p.pred_sc[1]}"
-            dc_best = p.dc_recommend.split(' (')[0] if p.dc_recommend else ''
+            dc_best = (
+                p.dc_recommend.split(' (')[0]
+                if p.dc_recommend else ''
+            )
             derby = "🔥" if p.is_derby else ""
             print(
-                f" {i:>2} {p.home:<16} {p.away:<16} {res:<7} {sc:>4} {cc}{p.conf:>4.0f}%{C.E} "
-                f"{p.dc_1x * 100:>4.0f}% {p.dc_x2 * 100:>4.0f}% {p.dc_12 * 100:>4.0f}% {dc_best} {derby}"
+                f" {i:>2} {p.home:<16} {p.away:<16} {res:<7} "
+                f"{sc:>4} {cc}{p.conf:>4.0f}%{C.E} "
+                f"{p.dc_1x * 100:>4.0f}% "
+                f"{p.dc_x2 * 100:>4.0f}% "
+                f"{p.dc_12 * 100:>4.0f}% {dc_best} {derby}"
             )
-
-        all_v = [(p, v) for p in preds for v in p.value_bets if v['is_value']]
-        all_dcv = [(p, v) for p in preds for v in p.dc_value_bets if v['is_value']]
+        # ✅ FIXED: f-strings
+        all_v = [
+            (p, v) for p in preds
+            for v in p.value_bets if v['is_value']
+        ]
+        all_dcv = [
+            (p, v) for p in preds
+            for v in p.dc_value_bets if v['is_value']
+        ]
         if all_v:
             print(f"\n {C.bold(C.green('💰 1X2 VALUE BETS:'))}")
             for p, v in all_v:
+                edge_str = f"+{v['edge']:.1f}%"
                 print(
-                    f" 🔥 {p.home} vs {p.away}: {v['market']} @{v['odds']:.2f} "
-                    f"(Edge:{C.green(f'+{v["edge"]:.1f}%')})"
+                    f" 🔥 {p.home} vs {p.away}: "
+                    f"{v['market']} @{v['odds']:.2f} "
+                    f"(Edge:{C.green(edge_str)})"
                 )
         if all_dcv:
             print(f"\n {C.bold(C.cyan('🛡️ DC VALUE BETS:'))}")
             for p, v in all_dcv:
+                edge_str = f"+{v['edge']:.1f}%"
                 print(
-                    f" 🛡️ {p.home} vs {p.away}: {v['market']} @{v['odds']:.2f} "
-                    f"(Edge:{C.green(f'+{v["edge"]:.1f}%')})"
+                    f" 🛡️ {p.home} vs {p.away}: "
+                    f"{v['market']} @{v['odds']:.2f} "
+                    f"(Edge:{C.green(edge_str)})"
                 )
 
     @staticmethod
     def backtest(r):
-        Disp.section("📊 BACKTEST v3.1")
+        Disp.section("📊 BACKTEST v3.2")
         if 'error' in r:
             Disp.error(r['error'])
             return
         w = 62
         print(f" {C.blue('┌' + '─' * w + '┐')}")
-        print(box(f" {C.bold('🔬 PERFORMANCE REPORT v3.1')}"))
+        print(box(f" {C.bold('🔬 PERFORMANCE REPORT v3.2')}"))
         print(f" {C.blue('├' + '─' * w + '┤')}")
         ra = r['result_acc']
-        rac = C.green if ra > 50 else (C.yellow if ra > 40 else C.red)
+        rac = (
+            C.green if ra > 50 else
+            (C.yellow if ra > 40 else C.red)
+        )
         print(box(f" {C.bold('📊 Accuracy:')}"))
-        print(box(f" 1X2 Result: {rac(f'{ra:.1f}%')} ({r['correct']}/{r['total']})"))
+        print(box(
+            f" 1X2 Result: {rac(f'{ra:.1f}%')} "
+            f"({r['correct']}/{r['total']})"
+        ))
         print(box(f" Exact Score: {r['score_acc']:.1f}%"))
         bs = r['brier']
-        bsc = C.green if bs < 0.15 else (C.yellow if bs < 0.22 else C.red)
+        bsc = (
+            C.green if bs < 0.15 else
+            (C.yellow if bs < 0.22 else C.red)
+        )
         print(box(f" Brier Score: {bsc(f'{bs:.4f}')}"))
-        print(box(f" Calibrated: {C.green('✅') if r['cal_used'] else C.yellow('❌')}"))
+        print(box(
+            f" Calibrated: "
+            f"{C.green('✅') if r['cal_used'] else C.yellow('❌')}"
+        ))
+        if r.get('ml_acc', 0) > 0:
+            print(box(
+                f" ML CV Acc: {C.green(f'{r[\"ml_acc\"]:.1f}%')}"
+            ))
         print(f" {C.blue('├' + '─' * w + '┤')}")
-
+        # DC accuracy
         print(box(f" {C.bold('🛡️ DOUBLE CHANCE ACCURACY:')}"))
         dc1x = r.get('dc_1x_acc', 0)
         dcx2 = r.get('dc_x2_acc', 0)
         dc12 = r.get('dc_12_acc', 0)
-        print(box(f" 1X (Home/Draw): {C.green(f'{dc1x:.1f}%')} ({r.get('dc_1x_n', 0)} matches)"))
-        print(box(f" X2 (Away/Draw): {C.yellow(f'{dcx2:.1f}%')} ({r.get('dc_x2_n', 0)} matches)"))
-        print(box(f" 12 (No Draw): {C.cyan(f'{dc12:.1f}%')} ({r.get('dc_12_n', 0)} matches)"))
+        print(box(
+            f" 1X (Home/Draw): {C.green(f'{dc1x:.1f}%')} "
+            f"({r.get('dc_1x_n', 0)} matches)"
+        ))
+        print(box(
+            f" X2 (Away/Draw): {C.yellow(f'{dcx2:.1f}%')} "
+            f"({r.get('dc_x2_n', 0)} matches)"
+        ))
+        print(box(
+            f" 12 (No Draw): {C.cyan(f'{dc12:.1f}%')} "
+            f"({r.get('dc_12_n', 0)} matches)"
+        ))
         print(f" {C.blue('├' + '─' * w + '┤')}")
-
         print(box(f" {C.bold('📈 Confidence Tiers:')}"))
         print(box(f" High (>55%): {r['hi_acc']:5.1f}% ({r['hi_n']})"))
         print(box(f" Med (40-55): {r['me_acc']:5.1f}% ({r['me_n']})"))
         print(box(f" Low (<40%): {r['lo_acc']:5.1f}% ({r['lo_n']})"))
-
         if ra >= 50:
             rt = "⭐⭐⭐⭐⭐"
         elif ra >= 45:
@@ -1898,14 +2215,13 @@ class Disp:
             rt = "⭐⭐"
         print(f" {C.blue('├' + '─' * w + '┤')}")
         print(box(f" {C.bold('Rating:')} {rt}"))
-        print(box(f" {C.dim('DC 1X is safest bet strategy (~65-70% hit rate)')}"))
         print(f" {C.blue('└' + '─' * w + '┘')}")
 
 
 # ══════════════════════════════════════════════════════════════
 # EXPORT
 # ══════════════════════════════════════════════════════════════
-def export_json(preds, fn="predictions_v31.json"):
+def export_json(preds, fn="predictions_v32.json"):
     out = []
     for p in preds:
         e = {
@@ -1949,24 +2265,28 @@ def export_json(preds, fn="predictions_v31.json"):
         }
         if p.value_bets:
             e['value_bets'] = [
-                {k: (float(v) if isinstance(v, (int, float, np.floating)) else v)
-                 for k, v in vb.items()}
+                {
+                    k: (float(v) if isinstance(v, (int, float)) else v)
+                    for k, v in vb.items()
+                }
                 for vb in p.value_bets if vb['is_value']
             ]
         if p.dc_value_bets:
             e['dc_value_bets'] = [
-                {k: (float(v) if isinstance(v, (int, float)) else v)
-                 for k, v in vb.items()}
+                {
+                    k: (float(v) if isinstance(v, (int, float)) else v)
+                    for k, v in vb.items()
+                }
                 for vb in p.dc_value_bets if vb['is_value']
             ]
         out.append(e)
     with open(fn, 'w', encoding='utf-8') as f:
         json.dump(out, f, indent=2, ensure_ascii=False)
-    print(C.green(f"Exported → {fn}"))
+    return fn
 
 
 # ══════════════════════════════════════════════════════════════
-# APP v3.1
+# APP v3.2 (unified CLI + Streamlit)
 # ══════════════════════════════════════════════════════════════
 class App:
     def __init__(self, token, okey=""):
@@ -1980,79 +2300,106 @@ class App:
         self.sy = None
         self.raw = []
         self.last = []
+        self._log = []
+
+    def _log_msg(self, level, msg):
+        self._log.append((level, msg))
+        if not STREAMLIT_AVAILABLE:
+            fn = {
+                'progress': Disp.progress,
+                'success': Disp.success,
+                'error': Disp.error,
+                'info': Disp.info
+            }
+            fn.get(level, print)(msg)
 
     def init(self):
         if not STREAMLIT_AVAILABLE:
             Disp.header()
-            Disp.progress("Season...")
+        self._log_msg('progress', "Loading season...")
         self.sy = self.api.season_year()
         if not self.sy:
-            if not STREAMLIT_AVAILABLE:
-                Disp.error("Failed")
+            self._log_msg('error', "Failed to get season")
             return False
-        if not STREAMLIT_AVAILABLE:
-            Disp.success(f"Season: {self.sy}/{self.sy + 1}")
-
-        if not STREAMLIT_AVAILABLE:
-            Disp.progress("Matches...")
+        self._log_msg('success', f"Season: {self.sy}/{self.sy + 1}")
+        self._log_msg('progress', "Loading matches...")
         self.raw = self.api.finished(self.sy)
         if not self.raw:
-            if not STREAMLIT_AVAILABLE:
-                Disp.error("No matches")
+            self._log_msg('error', "No matches found")
             return False
-        if not STREAMLIT_AVAILABLE:
-            Disp.success(f"{len(self.raw)} matches")
-
-        if not STREAMLIT_AVAILABLE:
-            Disp.progress("Processing + Elo + Momentum...")
+        self._log_msg('success', f"{len(self.raw)} matches loaded")
+        self._log_msg('progress', "Processing + Elo + Momentum...")
         self.data.process(self.raw)
         if not self.data.teams:
-            if not STREAMLIT_AVAILABLE:
-                Disp.error("No teams")
+            self._log_msg('error', "No teams")
             return False
-        if not STREAMLIT_AVAILABLE:
-            Disp.success(f"{len(self.data.teams)} teams | H:{self.data.avg_h:.2f} A:{self.data.avg_a:.2f}")
-
-        top = sorted(self.data.teams.values(), key=lambda t: t.elo, reverse=True)[:3]
-        if not STREAMLIT_AVAILABLE:
-            Disp.success("Elo: " + ", ".join(f"{t.name}({t.elo:.0f})" for t in top))
-
+        self._log_msg(
+            'success',
+            f"{len(self.data.teams)} teams | "
+            f"H:{self.data.avg_h:.2f} A:{self.data.avg_a:.2f}"
+        )
+        top = sorted(
+            self.data.teams.values(),
+            key=lambda t: t.elo,
+            reverse=True
+        )[:3]
+        self._log_msg(
+            'success',
+            "Elo: " + ", ".join(
+                f"{t.name}({t.elo:.0f})" for t in top
+            )
+        )
         hot = [t for t in self.data.teams.values() if t.momentum > 40]
         cold = [t for t in self.data.teams.values() if t.momentum < -40]
-        if not STREAMLIT_AVAILABLE:
-            if hot:
-                Disp.success("🔥 Hot: " + ", ".join(t.name for t in hot))
-            if cold:
-                Disp.info("📉 Cold: " + ", ".join(t.name for t in cold))
-
-        # تحميل نموذج XGBoost الجاهز (بدلاً من التدريب)
-        self.ml = MLPred()
-        if self.ml.trained:
-            if not STREAMLIT_AVAILABLE:
-                Disp.success("ML model loaded from file")
+        if hot:
+            self._log_msg(
+                'success',
+                "🔥 Hot: " + ", ".join(t.name for t in hot)
+            )
+        if cold:
+            self._log_msg(
+                'info',
+                "📉 Cold: " + ", ".join(t.name for t in cold)
+            )
+        # ✅ FULL ML TRAINING (58 features)
+        if ML_AVAILABLE:
+            mn = (
+                "XGBoost Stacking"
+                if XGBOOST_AVAILABLE else "RF+GBM"
+            )
+            self._log_msg('progress', f"Training ML ({mn})...")
+            self.ml = MLPred()
+            if self.ml.train(self.data):
+                src = "external" if self.ml._external else "trained"
+                self._log_msg(
+                    'success',
+                    f"ML {src}: {self.ml.acc * 100:.1f}% CV acc"
+                )
+            else:
+                self.ml = None
+                self._log_msg('info', "ML needs 40+ matches")
         else:
-            if not STREAMLIT_AVAILABLE:
-                Disp.info("ML model not available")
-
+            self._log_msg(
+                'info',
+                "ML disabled (pip install scikit-learn numpy)"
+            )
         if self.cal.load():
-            if not STREAMLIT_AVAILABLE:
-                Disp.success("Calibration loaded")
-
+            self._log_msg('success', "Calibration loaded")
         if self.odds.ok():
-            if not STREAMLIT_AVAILABLE:
-                Disp.progress("Odds...")
+            self._log_msg('progress', "Loading odds...")
             od = self.odds.fetch()
-            if od and not STREAMLIT_AVAILABLE:
-                Disp.success(f"Odds: {len(od)} matches")
-
+            if od:
+                self._log_msg('success', f"Odds: {len(od)} matches")
         self.eng = Engine(self.data, self.ml, self.odds, self.cal)
-        if not STREAMLIT_AVAILABLE:
-            Disp.success("Engine v3.1 ready! 🚀")
+        self._log_msg('success', "Engine v3.2 ready! 🚀")
         return True
 
     def standings(self):
         if STREAMLIT_AVAILABLE:
-            return sorted(self.data.teams.values(), key=lambda t: t.pos)
+            return sorted(
+                self.data.teams.values(),
+                key=lambda t: t.pos
+            )
         else:
             Disp.standings(self.data.teams)
 
@@ -2065,7 +2412,7 @@ class App:
             up = self.api.scheduled(self.sy)
         if not up:
             if not STREAMLIT_AVAILABLE:
-                Disp.error("None")
+                Disp.error("None found")
             return []
         if not STREAMLIT_AVAILABLE:
             Disp.success(f"{len(up)} matches")
@@ -2094,7 +2441,7 @@ class App:
                 at = t
         if not ht or not at:
             if not STREAMLIT_AVAILABLE:
-                Disp.error("Not found")
+                Disp.error("Team not found")
                 self.teams()
             return None
         pr = self.eng.predict(ht.id, at.id, "Custom")
@@ -2106,7 +2453,7 @@ class App:
 
     def backtest(self):
         if not STREAMLIT_AVAILABLE:
-            Disp.section("🔬 BACKTEST v3.1")
+            Disp.section("🔬 BACKTEST v3.2")
             Disp.progress("Testing with DC tracking...")
         r = self.bt.run(self.raw)
         if not STREAMLIT_AVAILABLE:
@@ -2114,27 +2461,43 @@ class App:
         if r.get('cal_used'):
             self.cal = self.bt.cal
             self.cal.save()
+            self.eng = Engine(
+                self.data, self.ml, self.odds, self.cal
+            )
             if not STREAMLIT_AVAILABLE:
                 Disp.success("Calibration saved & applied!")
         return r
 
     def teams(self):
         if STREAMLIT_AVAILABLE:
-            return sorted(self.data.teams.values(), key=lambda t: t.pos)
+            return sorted(
+                self.data.teams.values(),
+                key=lambda t: t.pos
+            )
         else:
             Disp.section("📋 TEAMS")
-            for t in sorted(self.data.teams.values(), key=lambda t: t.pos):
-                mi = "🔥" if t.momentum > 40 else ("📉" if t.momentum < -40 else "")
-                print(f" #{t.pos:<3} {t.name:<25} Elo:{t.elo:.0f} {C.form_str(t.form_string[-5:])} {mi}")
+            for t in sorted(
+                self.data.teams.values(),
+                key=lambda t: t.pos
+            ):
+                mi = (
+                    "🔥" if t.momentum > 40 else
+                    ("📉" if t.momentum < -40 else "")
+                )
+                print(
+                    f" #{t.pos:<3} {t.name:<25} "
+                    f"Elo:{t.elo:.0f} "
+                    f"{C.form_str(t.form_string[-5:])} {mi}"
+                )
 
     def interactive(self):
         if STREAMLIT_AVAILABLE:
             return
         while True:
-            print(f"\n {C.cyan(C.bold('═══ MENU v3.1 ═══'))}")
+            print(f"\n {C.cyan(C.bold('═══ MENU v3.2 ═══'))}")
             for n, e, l in [
                 (1, '🔮', 'Predict'),
-                (2, '⚽', 'Custom'),
+                (2, '⚽', 'Custom Match'),
                 (3, '📊', 'Standings'),
                 (4, '🔬', 'Backtest+Calibrate'),
                 (5, '📋', 'Teams'),
@@ -2144,13 +2507,14 @@ class App:
                 print(f" {n}. {e} {l}")
             try:
                 ch = input(C.cyan("\n (1-7): ")).strip()
-            except:
+            except (KeyboardInterrupt, EOFError):
                 break
-
             if ch == '1':
                 try:
-                    d = int(input(C.cyan(" Days(14): ")).strip() or "14")
-                except:
+                    d = int(
+                        input(C.cyan(" Days(14): ")).strip() or "14"
+                    )
+                except (ValueError, EOFError):
                     d = 14
                 self.predict(d)
             elif ch == '2':
@@ -2159,7 +2523,7 @@ class App:
                     a = input(C.cyan(" Away: ")).strip()
                     if h and a:
                         self.custom(h, a)
-                except:
+                except (KeyboardInterrupt, EOFError):
                     pass
             elif ch == '3':
                 self.standings()
@@ -2169,7 +2533,8 @@ class App:
                 self.teams()
             elif ch == '6':
                 if self.last:
-                    export_json(self.last)
+                    fn = export_json(self.last)
+                    Disp.success(f"Exported → {fn}")
                 else:
                     Disp.info("Predict first")
             elif ch == '7':
@@ -2177,221 +2542,443 @@ class App:
                 break
 
 
-# =================================================================
-# Streamlit Interface (واجهة Streamlit الجديدة)
-# =================================================================
-if STREAMLIT_AVAILABLE:
+# ══════════════════════════════════════════════════════════════
+# STREAMLIT UI v3.2 (enhanced with full details)
+# ══════════════════════════════════════════════════════════════
+def run_streamlit():
     st.set_page_config(
-        page_title="Premier League Predictor Pro v3.1",
+        page_title="PL Predictor Pro v3.2",
         page_icon="⚽",
         layout="wide",
         initial_sidebar_state="expanded"
     )
-
     st.markdown("""
-    <style>
-    .stApp { background-color: #0e1117; }
-    .main-header { color: #00ff9d; text-align: center; font-size: 3rem; font-weight: bold; margin-bottom: 0; }
-    .sub-header { color: #aaa; text-align: center; font-size: 1.2rem; margin-top: 0; }
-    .pred-card { background-color: #1e1e2e; border-radius: 10px; padding: 20px; margin: 10px 0; border-left: 5px solid #00ff9d; }
-    .prob-bar { height: 20px; border-radius: 10px; background-color: #333; margin: 5px 0; }
-    .home-bar { background-color: #00ff9d; height: 100%; border-radius: 10px; }
-    .draw-bar { background-color: #ffaa00; height: 100%; border-radius: 10px; }
-    .away-bar { background-color: #ff4b4b; height: 100%; border-radius: 10px; }
-    </style>
+        <style>
+        .main-header { text-align: center; font-size: 2.5rem; font-weight: bold; color: #00ff9d; }
+        .metric-card { background: #1e1e2e; border-radius: 10px; padding: 15px; border-left: 4px solid #00ff9d; }
+        </style>
     """, unsafe_allow_html=True)
-
-    st.sidebar.title("⚙️ الإعدادات")
-
-    fb_key = st.sidebar.text_input("🔑 football-data.org key", value=FOOTBALL_DATA_KEY, type="password")
-    odds_key = st.sidebar.text_input("🔑 The Odds API key", value=ODDS_API_KEY, type="password")
-
-    if st.sidebar.button("🚀 تهيئة النظام"):
-        with st.spinner("جاري تحميل البيانات والتدريب..."):
+    st.markdown(
+        "<h1 class='main-header'>⚽ Premier League Predictor v3.2</h1>",
+        unsafe_allow_html=True
+    )
+    st.caption(
+        "Dixon-Coles • Elo • XGBoost Stacking (58 features) • "
+        "Double Chance • Momentum • Calibration"
+    )
+    # Sidebar
+    st.sidebar.title("⚙️ Settings")
+    fb_key = st.sidebar.text_input(
+        "🔑 football-data.org key",
+        value=FOOTBALL_DATA_KEY,
+        type="password"
+    )
+    odds_key = st.sidebar.text_input(
+        "🔑 Odds API key (optional)",
+        value=ODDS_API_KEY,
+        type="password"
+    )
+    if st.sidebar.button("🚀 Initialize System"):
+        with st.spinner("Loading data & training ML (58 features)..."):
             app = App(fb_key, odds_key)
             if app.init():
                 st.session_state['app'] = app
                 st.session_state['initialized'] = True
-                st.success("✅ تمت التهيئة بنجاح!")
+                # Show init log
+                for level, msg in app._log:
+                    if level == 'success':
+                        st.success(msg)
+                    elif level == 'error':
+                        st.error(msg)
+                    elif level == 'info':
+                        st.info(msg)
             else:
-                st.error("❌ فشلت التهيئة. تأكد من المفتاح.")
-                st.stop()
-
-    if 'initialized' not in st.session_state:
-        st.info("👈 يرجى إدخال مفاتيح API والضغط على 'تهيئة النظام'")
+                st.error("❌ Initialization failed")
         st.stop()
-
+    if 'initialized' not in st.session_state:
+        st.info("👈 Enter API key and click 'Initialize System'")
+        # Show feature comparison
+        with st.expander("📊 v3.2 Features"):
+            col1, col2 = st.columns(2)
+            with col1:
+                st.markdown("### ✅ ML Features (58)")
+                st.markdown("""
+                    - Elo ratings (3)
+                    - Form scores with exp. decay (4)
+                    - Goal averages home/away (6)
+                    - Defense metrics (6)
+                    - Attack/Defense ratios (4)
+                    - Win rates (4)
+                    - League position & points (7)
+                    - Clean sheets (4)
+                    - Fatigue (2)
+                    - Draw rates (7)
+                    - Volatility (2)
+                    - Derby indicator (1)
+                    - Elo scaled (1)
+                    - **Momentum v3.1 (7)**
+                """)
+            with col2:
+                st.markdown("### 🔬 Models (8)")
+                st.markdown("""
+                    - Dixon-Coles (25%)
+                    - Elo System (18%)
+                    - ML Stacking (15%)
+                    - Form Analysis (12%)
+                    - Draw Predictor (10%)
+                    - Head-to-Head (8%)
+                    - Home Advantage (8%)
+                    - Fatigue Model (4%)
+                """)
+        st.stop()
     app = st.session_state['app']
-
     mode = st.sidebar.radio(
-        "📌 اختر الوظيفة",
-        ["🔮 توقع المباريات القادمة", "⚽ توقع مباراة مخصصة", "📊 جدول الترتيب", "🔬 اختبار رجعي", "💾 تصدير التنبؤات"]
+        "📌 Function",
+        [
+            "🔮 Predict Upcoming",
+            "⚽ Custom Match",
+            "📊 Standings",
+            "🔬 Backtest",
+            "💾 Export"
+        ]
     )
-
-    if mode == "📊 جدول الترتيب":
-        st.subheader("🏆 جدول ترتيب الدوري الإنجليزي")
+    # ──────────────────────────────────────
+    if mode == "📊 Standings":
+        st.subheader("🏆 Premier League Standings")
         teams_data = app.standings()
-        df_data = []
+        rows = []
         for t in teams_data:
-            df_data.append({
+            mom_icon = (
+                "🔥" if t.momentum > 40 else
+                ("📉" if t.momentum < -40 else "")
+            )
+            rows.append({
                 "#": t.pos,
-                "الفريق": t.name,
-                "لعب": t.played,
-                "فوز": t.wins,
-                "تعادل": t.draws,
-                "خسارة": t.losses,
-                "له": t.gf,
-                "عليه": t.ga,
-                "فرق": t.gd,
-                "نقاط": t.pts,
+                "Team": t.name,
+                "P": t.played,
+                "W": t.wins,
+                "D": t.draws,
+                "L": t.losses,
+                "GF": t.gf,
+                "GA": t.ga,
+                "GD": t.gd,
+                "Pts": t.pts,
                 "Elo": f"{t.elo:.0f}",
-                "آخر 5": t.form_string[-5:],
-                "زخم": t.momentum
+                "Form": t.form_string[-5:],
+                "Mom": f"{t.momentum:+d} {mom_icon}",
+                "Tier": t.elo_tier
             })
-        st.dataframe(df_data, use_container_width=True)
-
-    elif mode == "🔮 توقع المباريات القادمة":
-        days = st.slider("عدد الأيام القادمة", min_value=1, max_value=30, value=14)
-        if st.button("🔍 توقع"):
-            with st.spinner("جاري جلب المباريات..."):
+        st.dataframe(rows, use_container_width=True, hide_index=True)
+    # ──────────────────────────────────────
+    elif mode == "🔮 Predict Upcoming":
+        days = st.slider("Days ahead", 1, 30, 14)
+        if st.button("🔍 Predict"):
+            with st.spinner("Loading matches..."):
                 preds = app.predict(days)
-                if not preds:
-                    st.warning("لا توجد مباريات قادمة")
-                else:
-                    st.success(f"تم العثور على {len(preds)} مباراة")
-                    st.session_state['last_preds'] = preds
-                    for i, pr in enumerate(preds):
-                        with st.expander(f"⚽ {pr.home} vs {pr.away}"):
-                            col1, col2, col3 = st.columns(3)
-                            col1.metric("🏠 فوز المضيف", f"{pr.hp*100:.1f}%")
-                            col2.metric("🤝 تعادل", f"{pr.dp*100:.1f}%")
-                            col3.metric("✈️ فوز الضيف", f"{pr.ap*100:.1f}%")
-
-                            st.markdown("##### الاحتمالات")
-                            st.markdown(f"<div class='prob-bar'><div class='home-bar' style='width:{pr.hp*100}%'></div></div>", unsafe_allow_html=True)
-                            st.caption(f"🏠 {pr.hp*100:.1f}%")
-                            st.markdown(f"<div class='prob-bar'><div class='draw-bar' style='width:{pr.dp*100}%'></div></div>", unsafe_allow_html=True)
-                            st.caption(f"🤝 {pr.dp*100:.1f}%")
-                            st.markdown(f"<div class='prob-bar'><div class='away-bar' style='width:{pr.ap*100}%'></div></div>", unsafe_allow_html=True)
-                            st.caption(f"✈️ {pr.ap*100:.1f}%")
-
-                            st.markdown(f"**⚡ xG:** {pr.hxg:.2f} - {pr.axg:.2f}")
-                            st.markdown(f"**🎯 النتيجة الأكثر احتمالاً:** {pr.pred_sc[0]}-{pr.pred_sc[1]} ({pr.conf:.1f}% ثقة)")
-                            st.markdown(f"**🛡️ الفرص المزدوجة:** 1X={pr.dc_1x*100:.1f}% , X2={pr.dc_x2*100:.1f}% , 12={pr.dc_12*100:.1f}%")
-                            st.markdown(f"**💡 التوصية:** {pr.dc_recommend}")
-
-                            if pr.odds:
-                                st.markdown("**💰 فرص قيمة 1X2**")
-                                for vb in pr.value_bets:
-                                    if vb['is_value']:
-                                        st.success(f"{vb['market']} @{vb['odds']:.2f} (إيدج +{vb['edge']:.1f}%)")
-                                for vb in pr.dc_value_bets:
-                                    if vb['is_value']:
-                                        st.success(f"DC {vb['market']} @{vb['odds']:.2f} (إيدج +{vb['edge']:.1f}%)")
-
-    elif mode == "⚽ توقع مباراة مخصصة":
-        teams_list = sorted([t.name for t in app.data.teams.values()])
-        home = st.selectbox("اختر فريق المنزل", teams_list)
-        away = st.selectbox("اختر فريق الضيف", teams_list)
+            if not preds:
+                st.warning("No upcoming matches found")
+            else:
+                st.success(f"Found {len(preds)} matches")
+                st.session_state['last_preds'] = preds
+            for i, pr in enumerate(preds):
+                derby_tag = (
+                    f" 🔥 {pr.derby_name}" if pr.is_derby else ""
+                )
+                with st.expander(
+                    f"⚽ {pr.home} vs {pr.away}{derby_tag}"
+                ):
+                    _render_prediction_st(pr)
+    # ──────────────────────────────────────
+    elif mode == "⚽ Custom Match":
+        teams_list = sorted(
+            [t.name for t in app.data.teams.values()]
+        )
+        col1, col2 = st.columns(2)
+        home = col1.selectbox("🏠 Home Team", teams_list)
+        away = col2.selectbox(
+            "✈️ Away Team", teams_list, index=1
+        )
         if home == away:
-            st.warning("اختر فريقين مختلفين")
-        elif st.button("🔮 توقع"):
+            st.warning("Select two different teams")
+        elif st.button("🔮 Predict"):
             pr = app.custom(home, away)
             if pr:
                 st.session_state['last_preds'] = [pr]
-                col1, col2, col3 = st.columns(3)
-                col1.metric("🏠 فوز المضيف", f"{pr.hp*100:.1f}%")
-                col2.metric("🤝 تعادل", f"{pr.dp*100:.1f}%")
-                col3.metric("✈️ فوز الضيف", f"{pr.ap*100:.1f}%")
-                st.markdown("##### الاحتمالات")
-                st.markdown(f"<div class='prob-bar'><div class='home-bar' style='width:{pr.hp*100}%'></div></div>", unsafe_allow_html=True)
-                st.caption(f"🏠 {pr.hp*100:.1f}%")
-                st.markdown(f"<div class='prob-bar'><div class='draw-bar' style='width:{pr.dp*100}%'></div></div>", unsafe_allow_html=True)
-                st.caption(f"🤝 {pr.dp*100:.1f}%")
-                st.markdown(f"<div class='prob-bar'><div class='away-bar' style='width:{pr.ap*100}%'></div></div>", unsafe_allow_html=True)
-                st.caption(f"✈️ {pr.ap*100:.1f}%")
-                st.markdown(f"**⚡ xG:** {pr.hxg:.2f} - {pr.axg:.2f}")
-                st.markdown(f"**🎯 النتيجة:** {pr.pred_sc[0]}-{pr.pred_sc[1]}")
-                st.markdown(f"**🛡️ DC:** 1X={pr.dc_1x*100:.1f}% , X2={pr.dc_x2*100:.1f}% , 12={pr.dc_12*100:.1f}%")
-                st.markdown(f"**💡 توصية:** {pr.dc_recommend}")
+                _render_prediction_st(pr)
             else:
-                st.error("لم يتم العثور على الفرق أو فشل التوقع")
-
-    elif mode == "🔬 اختبار رجعي":
-        if st.button("▶️ بدء الاختبار"):
-            with st.spinner("جاري التحليل..."):
+                st.error("Prediction failed")
+    # ──────────────────────────────────────
+    elif mode == "🔬 Backtest":
+        if st.button("▶️ Run Backtest"):
+            with st.spinner(
+                "Backtesting with 58-feature ML + DC tracking..."
+            ):
                 r = app.backtest()
-                if 'error' in r:
-                    st.error(r['error'])
+            if 'error' in r:
+                st.error(r['error'])
+            else:
+                st.subheader("📈 Backtest Results v3.2")
+                col1, col2, col3, col4 = st.columns(4)
+                col1.metric("🎯 1X2 Accuracy", f"{r['result_acc']:.1f}%")
+                col2.metric("⚽ Exact Score", f"{r['score_acc']:.1f}%")
+                col3.metric("📊 Brier Score", f"{r['brier']:.4f}")
+                col4.metric("🤖 ML CV Acc", f"{r.get('ml_acc', 0):.1f}%")
+                st.markdown("### 🛡️ Double Chance Accuracy")
+                col1, col2, col3 = st.columns(3)
+                col1.metric(
+                    "1X (Home/Draw)",
+                    f"{r.get('dc_1x_acc', 0):.1f}%",
+                    f"{r.get('dc_1x_n', 0)} matches"
+                )
+                col2.metric(
+                    "X2 (Away/Draw)",
+                    f"{r.get('dc_x2_acc', 0):.1f}%",
+                    f"{r.get('dc_x2_n', 0)} matches"
+                )
+                col3.metric(
+                    "12 (No Draw)",
+                    f"{r.get('dc_12_acc', 0):.1f}%",
+                    f"{r.get('dc_12_n', 0)} matches"
+                )
+                st.markdown("### 📈 Confidence Tiers")
+                col1, col2, col3 = st.columns(3)
+                col1.metric(
+                    f"High >55% ({r['hi_n']})",
+                    f"{r['hi_acc']:.1f}%"
+                )
+                col2.metric(
+                    f"Med 40-55% ({r['me_n']})",
+                    f"{r['me_acc']:.1f}%"
+                )
+                col3.metric(
+                    f"Low <40% ({r['lo_n']})",
+                    f"{r['lo_acc']:.1f}%"
+                )
+                ra = r['result_acc']
+                if ra >= 50:
+                    stars = "⭐⭐⭐⭐⭐"
+                elif ra >= 45:
+                    stars = "⭐⭐⭐⭐"
+                elif ra >= 40:
+                    stars = "⭐⭐⭐"
                 else:
-                    st.subheader("📈 نتائج الاختبار")
-                    col1, col2, col3 = st.columns(3)
-                    col1.metric("🎯 دقة النتيجة", f"{r['result_acc']:.1f}%")
-                    col2.metric("⚽ دقة النتيجة الدقيقة", f"{r['score_acc']:.1f}%")
-                    col3.metric("📊 Brier Score", f"{r['brier']:.4f}")
-                    col1.metric("🛡️ دقة 1X", f"{r.get('dc_1x_acc',0):.1f}%")
-                    col2.metric("🛡️ دقة X2", f"{r.get('dc_x2_acc',0):.1f}%")
-                    col3.metric("🛡️ دقة 12", f"{r.get('dc_12_acc',0):.1f}%")
-
-    elif mode == "💾 تصدير التنبؤات":
-        if 'last_preds' in st.session_state and st.session_state['last_preds']:
-            fn = "predictions_streamlit.json"
-            export_json(st.session_state['last_preds'], fn)
+                    stars = "⭐⭐"
+                st.markdown(f"### Rating: {stars}")
+    # ──────────────────────────────────────
+    elif mode == "💾 Export":
+        if (
+            'last_preds' in st.session_state and
+            st.session_state['last_preds']
+        ):
+            fn = export_json(st.session_state['last_preds'])
             with open(fn, 'rb') as f:
-                st.download_button("📥 تحميل JSON", f, file_name=fn)
+                st.download_button(
+                    "📥 Download JSON",
+                    f,
+                    file_name=fn
+                )
         else:
-            st.warning("لا توجد تنبؤات للتصدير. قم بعمل تنبؤ أولاً.")
+            st.warning("No predictions to export. Predict first.")
 
 
-# =================================================================
-# CLI Entry Point
-# =================================================================
+def _render_prediction_st(pr):
+    """Render full prediction card in Streamlit"""
+    # Date
+    if pr.date and pr.date != "Custom":
+        dt = parse_date(pr.date)
+        if dt:
+            st.caption(f"📅 {dt.strftime('%a %d %b %Y • %H:%M')}")
+    # 1X2 Probabilities
+    col1, col2, col3 = st.columns(3)
+    col1.metric("🏠 Home", f"{pr.hp * 100:.1f}%")
+    col2.metric("🤝 Draw", f"{pr.dp * 100:.1f}%")
+    col3.metric("✈️ Away", f"{pr.ap * 100:.1f}%")
+    # Progress bars
+    st.progress(pr.hp, text=f"Home {pr.hp * 100:.1f}%")
+    st.progress(pr.dp, text=f"Draw {pr.dp * 100:.1f}%")
+    st.progress(pr.ap, text=f"Away {pr.ap * 100:.1f}%")
+    # Double Chance
+    st.markdown("#### 🛡️ Double Chance")
+    col1, col2, col3 = st.columns(3)
+    col1.metric("1X (Home/Draw)", f"{pr.dc_1x * 100:.1f}%")
+    col2.metric("X2 (Away/Draw)", f"{pr.dc_x2 * 100:.1f}%")
+    col3.metric("12 (No Draw)", f"{pr.dc_12 * 100:.1f}%")
+    st.info(f"💡 **Recommendation:** {pr.dc_recommend}")
+    # xG & Score
+    col1, col2 = st.columns(2)
+    col1.metric("⚡ xG Home", f"{pr.hxg:.2f}")
+    col2.metric("⚡ xG Away", f"{pr.axg:.2f}")
+    st.markdown(
+        f"**🎯 Most Likely Score:** "
+        f"**{pr.pred_sc[0]} - {pr.pred_sc[1]}** "
+        f"(Confidence: {pr.conf:.1f}%)"
+    )
+    # Top scores
+    if pr.top_sc:
+        scores_str = " | ".join(
+            f"{h}-{a} ({p * 100:.1f}%)"
+            for h, a, p in pr.top_sc[:5]
+        )
+        st.caption(f"📊 Top scores: {scores_str}")
+    # Momentum
+    if pr.h_momentum != 0 or pr.a_momentum != 0:
+        st.markdown("#### 💪 Momentum")
+        col1, col2 = st.columns(2)
+        h_icon = (
+            "🔥" if pr.h_momentum > 40 else
+            ("📉" if pr.h_momentum < -40 else "→")
+        )
+        a_icon = (
+            "🔥" if pr.a_momentum > 40 else
+            ("📉" if pr.a_momentum < -40 else "→")
+        )
+        col1.metric(
+            f"{h_icon} {pr.home}",
+            f"{pr.h_momentum:+d}"
+        )
+        col2.metric(
+            f"{a_icon} {pr.away}",
+            f"{pr.a_momentum:+d}"
+        )
+    # Markets
+    st.markdown("#### 📈 Markets")
+    col1, col2, col3, col4 = st.columns(4)
+    col1.metric("Over 1.5", f"{pr.o15 * 100:.0f}%")
+    col2.metric("Over 2.5", f"{pr.o25 * 100:.0f}%")
+    col3.metric("Over 3.5", f"{pr.o35 * 100:.0f}%")
+    col4.metric("BTTS", f"{pr.btts * 100:.0f}%")
+    # Form
+    st.markdown("#### 📋 Form & Fatigue")
+    col1, col2 = st.columns(2)
+    col1.markdown(
+        f"**{pr.home}:** `{pr.h_form}` "
+        f"(Fatigue: {pr.h_fat:.0f}, Rest: {pr.h_rest}d)"
+    )
+    col2.markdown(
+        f"**{pr.away}:** `{pr.a_form}` "
+        f"(Fatigue: {pr.a_fat:.0f}, Rest: {pr.a_rest}d)"
+    )
+    # Elo
+    col1, col2 = st.columns(2)
+    col1.metric(f"🏆 {pr.home} Elo", f"{pr.h_elo:.0f}")
+    col2.metric(f"🏆 {pr.away} Elo", f"{pr.a_elo:.0f}")
+    # Models breakdown
+    with st.expander("🔬 Model Breakdown"):
+        for nm, (mh, md, ma) in pr.models.items():
+            wt = WEIGHTS.get(nm, 0)
+            st.markdown(
+                f"**{nm}** ({wt:.0%}): "
+                f"H={mh * 100:.1f}% | "
+                f"D={md * 100:.1f}% | "
+                f"A={ma * 100:.1f}%"
+            )
+    # Value bets
+    if pr.value_bets:
+        value_found = [v for v in pr.value_bets if v['is_value']]
+        if value_found:
+            st.markdown("#### 💰 1X2 Value Bets")
+            for v in value_found:
+                st.success(
+                    f"**{v['market']}** @{v['odds']:.2f} | "
+                    f"Edge: +{v['edge']:.1f}% | "
+                    f"Kelly: {v['kelly']:.1f}%"
+                )
+    if pr.dc_value_bets:
+        dc_value_found = [
+            v for v in pr.dc_value_bets if v['is_value']
+        ]
+        if dc_value_found:
+            st.markdown("#### 🛡️ DC Value Bets")
+            for v in dc_value_found:
+                st.success(
+                    f"**{v['market']}** @{v['odds']:.2f} | "
+                    f"Edge: +{v['edge']:.1f}% | "
+                    f"Kelly: {v['kelly']:.1f}%"
+                )
+    # Final prediction
+    result_map = {
+        'HOME': f"🏆 {pr.home} Win",
+        'DRAW': "🤝 Draw",
+        'AWAY': f"🏆 {pr.away} Win"
+    }
+    conf_emoji = (
+        "🔥" if pr.conf > 55 else
+        ("⚡" if pr.conf > 40 else "⚠️")
+    )
+    st.markdown("---")
+    st.markdown(
+        f"### {conf_emoji} **PREDICTION:** "
+        f"{result_map.get(pr.result, '?')} "
+        f"({pr.conf:.1f}% confidence)"
+    )
+    dc_short = pr.dc_recommend.split(' - ')[0]
+    st.markdown(f"### 🛡️ **Best DC:** {dc_short}")
+    if pr.calibrated:
+        st.caption("✅ Calibrated probabilities")
+    if pr.ml_used:
+        st.caption(f"🤖 ML model used (CV: {pr.ml_acc * 100:.1f}%)")
+
+
+# ══════════════════════════════════════════════════════════════
+# CLI MAIN
+# ══════════════════════════════════════════════════════════════
 def cli_main():
     tok = FOOTBALL_DATA_KEY
-    if tok == "xxxxx":
+    if not tok:
         tok = os.environ.get("FOOTBALL_DATA_KEY", "")
     okey = ODDS_API_KEY
-    if okey == "xxxxx":
+    if not okey:
         okey = os.environ.get("ODDS_API_KEY", "")
-
     if not tok:
         Disp.header()
         try:
-            tok = input(C.cyan(" 🔑 football-data.org key: ")).strip()
-        except:
+            tok = input(
+                C.cyan(" 🔑 football-data.org key: ")
+            ).strip()
+        except (KeyboardInterrupt, EOFError):
             return
         if not tok:
-            Disp.error("No key")
+            Disp.error("No key provided")
             return
-
     app = App(tok, okey)
     if not app.init():
         return
     app.standings()
-
     try:
-        mode = input(C.cyan("\n (1) Auto (2) Interactive: ")).strip()
-    except:
+        mode = input(
+            C.cyan("\n (1) Auto (2) Interactive: ")
+        ).strip()
+    except (KeyboardInterrupt, EOFError):
         return
-
     if mode == '2':
         app.interactive()
     else:
         preds = app.predict()
         try:
-            if input(C.cyan(" Backtest? (y/n): ")).strip().lower() == 'y':
+            ans = input(
+                C.cyan(" Backtest? (y/n): ")
+            ).strip().lower()
+            if ans == 'y':
                 app.backtest()
-        except:
+        except (KeyboardInterrupt, EOFError):
             pass
         if preds:
             try:
-                if input(C.cyan(" Export? (y/n): ")).strip().lower() == 'y':
-                    export_json(preds)
-            except:
+                ans = input(
+                    C.cyan(" Export? (y/n): ")
+                ).strip().lower()
+                if ans == 'y':
+                    fn = export_json(preds)
+                    Disp.success(f"Exported → {fn}")
+            except (KeyboardInterrupt, EOFError):
                 pass
-        print(C.green(C.bold("\n ✅ Done! ⚽\n")))
+    print(C.green(C.bold("\n ✅ Done! ⚽\n")))
 
 
-if __name__ == "__main__":
-    if not STREAMLIT_AVAILABLE:
-        cli_main()
+# ══════════════════════════════════════════════════════════════
+# ENTRY POINT
+# ══════════════════════════════════════════════════════════════
+if STREAMLIT_AVAILABLE:
+    run_streamlit()
+elif __name__ == "__main__":
+    cli_main()
