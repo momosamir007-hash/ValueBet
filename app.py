@@ -107,7 +107,7 @@ RIVALRIES = {
     frozenset({'Wolves', 'Aston Villa'}): 'West Midlands Derby',
 }
 
-# ALIASES الأساسية (سيتم دمجها مع الخريطة المحملة)
+# ALIASES الأساسية
 ALIASES = {
     'manchester united': 'Man United',
     'manchester city': 'Man City',
@@ -128,45 +128,6 @@ ALIASES = {
     'liverpool': 'Liverpool',
     'everton': 'Everton',
 }
-
-# تحميل قاموس توحيد الأسماء الإضافي (إذا وجد)
-TEAMS_MAP = {}
-if Path(TEAMS_MAP_FILE).exists():
-    try:
-        with open(TEAMS_MAP_FILE, 'r', encoding='utf-8') as f:
-            TEAMS_MAP = json.load(f)
-        # تحويل المفاتيح إلى صيغة صالحة (نحتفظ بالتعيينات)
-        for k, v in TEAMS_MAP.items():
-            # قد تكون المفاتيح طويلة جداً، نأخذ فقط الجزء الأخير من اسم الفريق
-            # نضيف التعيين لكل اسم محتمل
-            parts = k.split()
-            if parts:
-                last_part = parts[-1]  # آخر كلمة غالباً اسم الفريق
-                if last_part not in ALIASES:
-                    ALIASES[last_part.lower()] = v
-        print(C.green("✓ Loaded teams map"))
-    except Exception as e:
-        print(C.red(f"✖ Failed to load teams map: {e}"))
-
-# تحميل تقييمات Elo المحفوظة (إذا وجدت)
-ELO_RATINGS = {}
-if Path(ELO_RATINGS_FILE).exists():
-    try:
-        with open(ELO_RATINGS_FILE, 'rb') as f:
-            raw_elo = pickle.load(f)
-            # محاولة استخراج أسماء الفرق من المفاتيح المعقدة
-            for key, val in raw_elo.items():
-                # المفاتيح تحتوي على أسماء الفرق في نهاية النص (تقريباً)
-                # نقوم باستخراج اسم الفريق المحتمل
-                if isinstance(key, str):
-                    # نأخذ آخر كلمة (قد يكون اسم الفريق)
-                    parts = key.split()
-                    if parts:
-                        team_name = parts[-1]  # أبسط تخمين
-                        ELO_RATINGS[team_name] = val
-        print(C.green("✓ Loaded Elo ratings"))
-    except Exception as e:
-        print(C.red(f"✖ Failed to load Elo ratings: {e}"))
 
 # ══════════════════════════════════════════════════════════════
 # UTILITIES
@@ -189,9 +150,11 @@ def norm_name(n):
         if k in lo or lo in k:
             return v
     # أيضاً نبحث في TEAMS_MAP
-    for k, v in TEAMS_MAP.items():
-        if lo in k.lower() or k.lower() in lo:
-            return v
+    global TEAMS_MAP
+    if 'TEAMS_MAP' in globals():
+        for k, v in TEAMS_MAP.items():
+            if lo in k.lower() or k.lower() in lo:
+                return v
     return n
 
 
@@ -210,6 +173,7 @@ def parse_date(s):
         return None
 
 
+# كلاس الألوان (تم نقله إلى الأعلى ليصبح متاحاً للجميع)
 class C:
     H = '\033[95m'
     B = '\033[94m'
@@ -296,6 +260,35 @@ class C:
 
 def box(t):
     return f" {C.blue('│')} {t}"
+
+
+# ══════════════════════════════════════════════════════════════
+# تحميل الملفات الإضافية (بعد تعريف C)
+# ══════════════════════════════════════════════════════════════
+TEAMS_MAP = {}
+if Path(TEAMS_MAP_FILE).exists():
+    try:
+        with open(TEAMS_MAP_FILE, 'r', encoding='utf-8') as f:
+            TEAMS_MAP = json.load(f)
+        print(C.green("✓ Loaded teams map"))
+    except Exception as e:
+        print(C.red(f"✖ Failed to load teams map: {e}"))
+
+ELO_RATINGS = {}
+if Path(ELO_RATINGS_FILE).exists():
+    try:
+        with open(ELO_RATINGS_FILE, 'rb') as f:
+            raw_elo = pickle.load(f)
+            # محاولة استخراج أسماء الفرق من المفاتيح المعقدة
+            for key, val in raw_elo.items():
+                if isinstance(key, str):
+                    parts = key.split()
+                    if parts:
+                        team_name = parts[-1]  # أبسط تخمين
+                        ELO_RATINGS[team_name] = val
+        print(C.green("✓ Loaded Elo ratings"))
+    except Exception as e:
+        print(C.red(f"✖ Failed to load Elo ratings: {e}"))
 
 
 # ══════════════════════════════════════════════════════════════
