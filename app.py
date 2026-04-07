@@ -1380,7 +1380,19 @@ class MLPred:
             # FIX 2+6: the pipeline contains imputer+scaler+model,
             # so we NEVER apply separate scaling here.
             probs = self.pipeline.predict_proba(X)[0]
-            return (float(probs[0]), float(probs[1]), float(probs[2]))
+            # استخراج ترتيب الفئات الحقيقي من النموذج
+            classes = self.pipeline.classes_
+            
+            # ربط كل فئة باحتمالها برمجياً لتجنب أي خلط
+            prob_dict = {cls: prob for cls, prob in zip(classes, probs)}
+            
+            # إرجاع القيم بالترتيب الصحيح (HOME=0, DRAW=1, AWAY=2)
+            return (
+                float(prob_dict.get(0, 0.0)), # فوز الأرض
+                float(prob_dict.get(1, 0.0)), # التعادل
+                float(prob_dict.get(2, 0.0))  # فوز الضيف
+            )
+
         except Exception:
             return None
 
