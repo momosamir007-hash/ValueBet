@@ -2005,20 +2005,23 @@ class Disp:
                   f"{sc:>4} {cc}{p.conf:>4.0f}%{C.E} "
                   f"{p.dc_1x*100:>4.0f}% {p.dc_x2*100:>4.0f}% "
                   f"{p.dc_12*100:>4.0f}% {dc_best} {derby}")
-        all_v = [(p,v) for p in preds for v in p.value_bets if v['is_value']]
+         all_v = [(p,v) for p in preds for v in p.value_bets if v['is_value']]
         all_dcv = [(p,v) for p in preds for v in p.dc_value_bets if v['is_value']]
         if all_v:
             print(f"\n {C.bold(C.green('💰 1X2 VALUE BETS:'))}")
             for p, v in all_v:
+                edge_val = v['edge']
                 print(f" 🔥 {p.home} vs {p.away}: "
                       f"{v['market']} @{v['odds']:.2f} "
-                      f"(Edge:{C.green(f'+{v[\"edge\"]:.1f}%')})")
+                      f"(Edge:{C.green(f'+{edge_val:.1f}%')})")
         if all_dcv:
             print(f"\n {C.bold(C.cyan('🛡️ DC VALUE BETS:'))}")
             for p, v in all_dcv:
+                edge_val = v['edge']
                 print(f" 🛡️ {p.home} vs {p.away}: "
                       f"{v['market']} @{v['odds']:.2f} "
-                      f"(Edge:{C.green(f'+{v[\"edge\"]:.1f}%')})")
+                      f"(Edge:{C.green(f'+{edge_val:.1f}%')})")
+
 
     @staticmethod
     def backtest(r: dict):
