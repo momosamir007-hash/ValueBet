@@ -1,4 +1,4 @@
-#!/usr/bin/env python3
+٧#!/usr/bin/env python3
 """ ╔══════════════════════════════════════════════════════════════════════╗
     ║ ⚽ PREMIER LEAGUE PREDICTOR PRO v3.3 ⚽ ║
     ║ ║
@@ -1281,7 +1281,7 @@ class MLPred:
             min_samples_leaf=3,
             class_weight='balanced',  # FIX 3
             random_state=42,
-            n_jobs=-1,
+            n_jobs=1,
         )
         base_gb = GradientBoostingClassifier(
             n_estimators=150,
@@ -1325,7 +1325,7 @@ class MLPred:
                 final_estimator=meta_lr,
                 cv=skf,  # FIX 5: stratified folds
                 passthrough=False,
-                n_jobs=-1,
+                n_jobs=1,
             )
             # FIX 2: wrap classifier in a Pipeline with Imputer + Scaler
             full_pipeline = Pipeline([
@@ -1340,7 +1340,7 @@ class MLPred:
                 full_pipeline, X_arr, y_arr,
                 cv=skf,
                 scoring='balanced_accuracy',  # FIX 3: balanced metric
-                n_jobs=-1,
+                n_jobs=1,
             )
             self.acc = float(cv_scores.mean())
 
@@ -1356,7 +1356,7 @@ class MLPred:
                     n_estimators=200,
                     class_weight='balanced',
                     random_state=42,
-                    n_jobs=-1,
+                    n_jobs=1,
                 )),
             ])
             try:
