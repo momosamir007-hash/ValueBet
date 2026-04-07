@@ -1962,17 +1962,21 @@ class Disp:
             print(box(f" {C.bold('💰 1X2 VALUE BETS')}"))
             for v in p.value_bets:
                 if v['is_value']:
+                    edge_val = v['edge']
                     print(box(f" {v['market']:<8} @{v['odds']:.2f} "
-                              f"Edge:{C.green(f'+{v[\"edge\"]:.1f}%')} "
-                              f"Kelly:{v['kelly']:.1f}% {C.value_ind(v['edge'])}"))
+                              f"Edge:{C.green(f'+{edge_val:.1f}%')} "
+                              f"Kelly:{v['kelly']:.1f}% {C.value_ind(edge_val)}"))
+
         if p.dc_value_bets and any(v['is_value'] for v in p.dc_value_bets):
             print(f" {C.blue('├'+'─'*w+'┤')}")
             print(box(f" {C.bold('🛡️ DC VALUE BETS')}"))
             for v in p.dc_value_bets:
                 if v['is_value']:
+                    edge_val = v['edge']
                     print(box(f" {v['market']:<8} @{v['odds']:.2f} "
-                              f"Edge:{C.green(f'+{v[\"edge\"]:.1f}%')} "
-                              f"Kelly:{v['kelly']:.1f}% {C.value_ind(v['edge'])}"))
+                              f"Edge:{C.green(f'+{edge_val:.1f}%')} "
+                              f"Kelly:{v['kelly']:.1f}% {C.value_ind(edge_val)}"))
+
         print(f" {C.blue('├'+'─'*w+'┤')}")
         rm = {'HOME': f"🏆 {p.home} Win", 'DRAW': "🤝 Draw", 'AWAY': f"🏆 {p.away} Win"}
         cc = C.conf_color(p.conf)
