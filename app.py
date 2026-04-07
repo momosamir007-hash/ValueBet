@@ -1313,7 +1313,7 @@ class MLPred:
             C=1.0,
             class_weight='balanced',  # FIX 3
             solver='lbfgs',
-            multi_class='multinomial',
+            
         )
 
         # FIX 5: StratifiedKFold keeps class ratios in every fold
