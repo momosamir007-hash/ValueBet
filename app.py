@@ -2128,6 +2128,7 @@ class App:
 
     def _log_msg(self, level: str, msg: str):
         self._log.append((level, msg))
+        print(f">>> {msg}", flush=True)
         if not STREAMLIT_AVAILABLE:
             {'progress': Disp.progress, 'success': Disp.success, 'error': Disp.error, 'info': Disp.info}.get(level, print)(msg)
 
