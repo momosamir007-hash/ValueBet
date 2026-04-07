@@ -2331,7 +2331,7 @@ class App:
             self._log_msg('progress', f"Loading season {year}/{year+1}...")
             season_matches = self.api.finished(year)
             if season_matches:
-       self.raw.extend(season_matches)
+                self.raw.extend(season_matches)
 
         if not self.raw:
             self._log_msg('error', "No matches found")
