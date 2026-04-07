@@ -2043,7 +2043,8 @@ class Disp:
         print(box(f" Brier Score: {bsc(f'{bs:.4f}')}"))
         print(box(f" Calibrated: {C.green('✅') if r['cal_used'] else C.yellow('❌')}"))
         if r.get('ml_acc',0) > 0:
-            print(box(f" ML Balanced Acc: {C.green(f'{r[\"ml_acc\"]:.1f}%')}"))
+            ml_acc_val = r['ml_acc']
+            print(box(f" ML Balanced Acc: {C.green(f'{ml_acc_val:.1f}%')}"))
         print(f" {C.blue('├'+'─'*w+'┤')}")
         print(box(f" {C.bold('🛡️ DOUBLE CHANCE ACCURACY:')}"))
         print(box(f" 1X (Home/Draw): {C.green(f'{r.get(\"dc_1x_acc\",0):.1f}%')} ({r.get('dc_1x_n',0)} matches)"))
