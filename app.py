@@ -1,4 +1,4 @@
-٧#!/usr/bin/env python3
+#!/usr/bin/env python3
 """ ╔══════════════════════════════════════════════════════════════════════╗
     ║ ⚽ PREMIER LEAGUE PREDICTOR PRO v3.3 ⚽ ║
     ║ ║
