@@ -1136,7 +1136,7 @@ class DataProc:
 #   via the pipeline's last step, not the pipeline itself.
 # ══════════════════════════════════════════════════════════════
 class MLPred:
-    N_FEATURES = 58  # expected feature count
+    N_FEATURES = 59  # expected feature count
 
     def __init__(self):
         self.pipeline: Optional[Pipeline] = None  # full sklearn Pipeline
